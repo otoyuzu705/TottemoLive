@@ -111,3 +111,33 @@ func TestDirect(t *testing.T) {
 		t.Error("right should dominate")
 	}
 }
+
+func TestSub(t *testing.T) {
+	in := make([]float32, 100)
+	in[0] = 1
+	first := func(x []float32) int {
+		for i, v := range x {
+			if v != 0 {
+				return i
+			}
+		}
+		return -1
+	}
+	// サブのほうが近い(25 m)と、メイン(34.3 m)に合わせて遅れる。減衰はサブ自身の距離(25 m, 逆距離則)
+	out := Sub(in, 48000, 25, 34.3, 1)
+	if first(out) != DelaySamples(34.3, 48000) || math.Abs(float64(out[first(out)])-0.4) > 1e-6 {
+		t.Errorf("near sub: index %d value %v", first(out), out[first(out)])
+	}
+	if len(out) != len(in)+first(out) {
+		t.Errorf("length %d", len(out))
+	}
+	// サブのほうが遠いときは、自身の距離の遅延(メインより遅れる)になる
+	out = Sub(in, 48000, 40, 30, 1)
+	if first(out) != DelaySamples(40, 48000) {
+		t.Errorf("far sub: index %d", first(out))
+	}
+	// 基準距離より近いと減衰しない
+	if v := Sub(in, 48000, 5, 5, 1); v[first(v)] != 1 {
+		t.Errorf("close sub gain %v", v[first(v)])
+	}
+}
