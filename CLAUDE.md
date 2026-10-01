@@ -4,26 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 現状
 
-M1(エンジンとCLI)とM2(Wails骨格・音作りパネル・曲全体のプレビュー・A/B・書き出し)、M3(会場マップのドラッグ)、M4(客席タイムライン)、M5(ステム分離連携・プリセット追加)まで実装済み。初版のマイルストーンは一通り完了で、これからは音質の追い込み(合成IR・合成HRIR・合成客席SEの実素材への差し替えを含む)。実装は設計書 `livebin-design.md` に従う。設計と違う実装をする場合は、設計書も同じ変更で更新する。
+M1(エンジンとCLI)とM2(Wails骨格・音作りパネル・曲全体のプレビュー・A/B・書き出し)、M3(会場マップのドラッグ)、M4(客席タイムライン)、M5(ステム分離連携・プリセット追加)まで実装済み。初版のマイルストーンは一通り完了で、これからは音質の追い込み(合成IR・合成HRIR・合成客席SEの実素材への差し替えを含む)。実装は設計書 `TottemoLive-design.md` に従う。設計と違う実装をする場合は、設計書も同じ変更で更新する。
 
-作るもの: 楽曲音源を「指定した会場・座席で聴いているような」バイノーラル音源に変換して書き出すデスクトップアプリ(アプリ名・Goモジュール名は `livebin`)。Go + Wails v2、フロントは Svelte + TypeScript。
+作るもの: 楽曲音源を「指定した会場・座席で聴いているような」バイノーラル音源に変換して書き出すデスクトップアプリ(アプリ名は `TottemoLive`、Goモジュール名は `tottemolive`)。Go + Wails v2、フロントは Svelte + TypeScript。
 
 M1時点の暫定: 実測のHRIR・会場IR・客席SEは再配布条件が未確認で同梱していないため、いずれも合成で代用している(HRIRは球形頭部モデル `spatial/synthetic.go`、会場IRは残響時間からの合成 `venue.BuildIR`、客席SEは乱数からの合成 `crowd`)。実素材を同梱するときは `assets/` に置き、`spatial.LoadSet` などを差し替える。
 
 ## コマンド
 
 ```
-go run ./cmd/livebin-cli new -o project.json a.wav b.wav                      # 既定値のプロジェクトを作る
-go run ./cmd/livebin-cli render project.json -o out.wav --set pa.lowCutHz=80  # CLI(Wailsなし)。--venue ID で会場切替
-go run ./cmd/livebin-cli params     # 音作りパラメーターの一覧
+go run ./cmd/tottemolive-cli new -o project.json a.wav b.wav                      # 既定値のプロジェクトを作る
+go run ./cmd/tottemolive-cli render project.json -o out.wav --set pa.lowCutHz=80  # CLI(Wailsなし)。--venue ID で会場切替
+go run ./cmd/tottemolive-cli params     # 音作りパラメーターの一覧
 go test ./internal/...              # DSPエンジンのテスト(ffmpegがなければrenderのE2Eはスキップ)
 go test ./internal/dsp -run TestXxx # 単一テスト
 wails dev                           # GUIの開発起動(Node.js必須)。ブラウザからは http://localhost:34115
-wails build                         # 配布ビルド(build/bin/livebin.exe)
+wails build                         # 配布ビルド(build/bin/TottemoLive.exe)
 cd frontend && npx svelte-check   # フロントの型チェック
 ```
 
-実行時に `ffmpeg` / `ffprobe` がPATH上に必要(ステム分離を使うなら `demucs` も。無ければ分離ボタンが出ないだけ。`LIVEBIN_DEMUCS` で場所を指定可。テストは偽のdemucsで行う)(デコード・エンコードを子プロセスで行うため。環境変数 `LIVEBIN_FFMPEG` `LIVEBIN_FFPROBE` で場所を指定可)。Demucsは任意機能。
+実行時に `ffmpeg` / `ffprobe` がPATH上に必要(ステム分離を使うなら `demucs` も。無ければ分離ボタンが出ないだけ。`TOTTEMOLIVE_DEMUCS` で場所を指定可。テストは偽のdemucsで行う)(デコード・エンコードを子プロセスで行うため。環境変数 `TOTTEMOLIVE_FFMPEG` `TOTTEMOLIVE_FFPROBE` で場所を指定可)。Demucsは任意機能。
 
 ## 実装順序
 
@@ -49,7 +49,7 @@ M1 エンジンとCLI(済) → M2 Wails骨格と音作りパネル・プレビ�
 
 **レイヤの境界**
 
-- Wailsに依存してよいのは `main.go` と `app.go` だけ。`internal/` 以下はWailsをimportしない(同じエンジンを `cmd/livebin-cli` から呼ぶため)
+- Wailsに依存してよいのは `main.go` と `app.go` だけ。`internal/` 以下はWailsをimportしない(同じエンジンを `cmd/tottemolive-cli` から呼ぶため)
 - フロントは表示と操作だけ。デコードから書き出しまではすべてGo側の `internal/render` のジョブが実行する
 - cgoとPythonをGoのビルドに持ち込まない。FFmpegとDemucsは子プロセスで呼ぶ。Go本体の依存はWailsとgonumに絞る
 
