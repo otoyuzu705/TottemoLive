@@ -75,12 +75,6 @@ func Decode(ctx context.Context, path string, sr int, progress func(ratio float6
 	return decodeRaw(ctx, path, sr, Channels, 0, 0, progress)
 }
 
-// DecodeRange は startSec から durSec 秒ぶん(durSec<=0 なら最後まで)をデコードする。
-// ファイルの範囲外は返らないので、呼び出し側で長さをそろえること。
-func DecodeRange(ctx context.Context, path string, sr int, startSec, durSec float64) ([][]float32, error) {
-	return decodeRaw(ctx, path, sr, Channels, startSec, durSec, nil)
-}
-
 // peakSampleRate は波形表示用のモノラルデコードのサンプルレート。
 const peakSampleRate = 8000
 

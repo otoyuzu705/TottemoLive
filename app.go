@@ -49,7 +49,7 @@ func NewApp() *App {
 		stemDir: filepath.Join(cacheDir, "livebin", "stems"),
 		engine:  render.NewEngine(),
 		jobs:    render.NewJobs(),
-		store:   render.NewStore(4),
+		store:   render.NewStore(3),
 		presets: &project.PresetStore{UserDir: filepath.Join(userDir, "livebin", "presets"), Shipped: assets.ShippedPresets()},
 		sources: map[string]string{},
 		ctx:     context.Background(),
@@ -280,21 +280,21 @@ func (a *App) DeleteSoundPreset(name string) error { return a.presets.Delete(nam
 
 // --- レンダリング ---
 
-// RenderPreview は指定区間を書き出しと同じ処理でレンダリングし、プレビューURL(/preview/{id}.wav)を返す。
+// RenderPreview は曲全体を書き出しと同じ処理でレンダリングし、プレビューURL(/preview/{id}.wav)を返す。
 // 段ごとのキャッシュを使う。新しい要求が来ると進行中のプレビューは中断され、
 // 中断された呼び出しは空文字とnilを返す(フロントは無視する)。
-func (a *App) RenderPreview(p project.Project, startSec, lenSec float64) (string, error) {
+func (a *App) RenderPreview(p project.Project) (string, error) {
 	_, ctx, done := a.jobs.Begin(a.ctx, "preview")
 	defer done()
-	res, err := a.engine.Preview(ctx, p, startSec, lenSec, nil)
+	res, err := a.engine.Preview(ctx, p, nil)
 	return a.previewURL(ctx, res, err)
 }
 
-// RenderOriginal は同じ区間の原音(A/B比較用)のURLを返す。ラウドネスはプレビューと同じ目標にそろえる。
-func (a *App) RenderOriginal(p project.Project, startSec, lenSec float64) (string, error) {
+// RenderOriginal は曲全体の原音(A/B比較用)のURLを返す。ラウドネスはプレビューと同じ目標にそろえる。
+func (a *App) RenderOriginal(p project.Project) (string, error) {
 	_, ctx, done := a.jobs.Begin(a.ctx, "original")
 	defer done()
-	res, err := a.engine.Original(ctx, p, startSec, lenSec)
+	res, err := a.engine.Original(ctx, p)
 	return a.previewURL(ctx, res, err)
 }
 
