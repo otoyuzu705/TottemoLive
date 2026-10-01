@@ -1,0 +1,55 @@
+<script lang="ts">
+  import { app } from './store.svelte'
+  import { player } from './player.svelte'
+  import { mmss } from './format'
+
+  const hasPreview = $derived(player.loaded.processed)
+  const total = $derived(player.duration || app.duration)
+
+  // スペースキーで再生/停止(入力欄・ボタン・選択欄の操作中は除く)
+  function onKey(e: KeyboardEvent) {
+    if (e.code !== 'Space' || !hasPreview) return
+    const t = e.target as HTMLElement | null
+    if (t && ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(t.tagName)) return
+    e.preventDefault()
+    void player.toggle()
+  }
+</script>
+
+<svelte:window onkeydown={onKey} />
+
+<div class="transport">
+  <button class="primary play" disabled={!hasPreview} onclick={() => player.toggle()} aria-label={player.playing ? '一時停止' : '再生'}>
+    {player.playing ? '⏸ 停止' : '▶ 再生'}
+  </button>
+  <button disabled={!hasPreview} onclick={() => player.seek(0)} title="曲の頭に戻る" aria-label="曲の頭に戻る">⏮</button>
+
+  <div class="ab" role="group" aria-label="A/B切り替え">
+    <button class:active={player.mode === 'original'} disabled={!player.loaded.original} onclick={() => player.setMode('original')}>A 原音</button>
+    <button class:active={player.mode === 'processed'} disabled={!player.loaded.processed} onclick={() => player.setMode('processed')}>B 加工後</button>
+  </div>
+
+  <span class="pos">{mmss(player.position)} / {mmss(total)}</span>
+  <span class="hint">波形をクリック・ドラッグで再生位置を移動 / Space で再生・停止</span>
+
+  <div class="status" aria-live="polite">
+    {#if app.busy > 0}<span class="spin"></span> 曲全体を処理中…{:else if hasPreview}<span class="ok">● 最新</span>{/if}
+  </div>
+</div>
+
+<style>
+  .transport { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .play { min-width: 6.5em; }
+  .ab { display: flex; }
+  .ab button { border-radius: 0; }
+  .ab button:first-child { border-radius: 5px 0 0 5px; }
+  .ab button:last-child { border-radius: 0 5px 5px 0; margin-left: -1px; }
+  .ab button.active { background: var(--accent-dim); border-color: var(--accent); }
+  .pos { font-variant-numeric: tabular-nums; color: var(--text); }
+  .hint { color: var(--muted); font-size: 11px; }
+  .status { margin-left: auto; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .ok { color: var(--ok); }
+  .spin { width: 10px; height: 10px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+</style>

@@ -1,0 +1,36 @@
+{
+  "pa": {
+    "lowCutHz": 40,
+    "highShelfHz": 6000,
+    "highShelfDb": -1,
+    "compThresholdDb": -18,
+    "compRatio": 2,
+    "compAttackMs": 10,
+    "compReleaseMs": 150,
+    "drive": 0.05
+  },
+  "spatial": {
+    "hrirSet": "synthetic",
+    "distanceRolloff": 1,
+    "airAbsorption": 1,
+    "directLevelDb": 0
+  },
+  "reverb": {
+    "mix": 0.25,
+    "preDelayMs": 40,
+    "decayScale": 0.9,
+    "highDampHz": 8000
+  },
+  "crowd": {
+    "density": 0.7,
+    "levelDb": -10,
+    "spreadM": 10,
+    "seed": 1
+  },
+  "output": {
+    "sampleRate": 48000,
+    "bitDepth": 24,
+    "targetLufs": -14,
+    "ceilingDbTp": -1
+  }
+}
