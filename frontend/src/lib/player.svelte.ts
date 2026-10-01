@@ -5,7 +5,7 @@ export type Mode = 'processed' | 'original'
 /** 再生音量(dB)の範囲。0 dB を超えると出力が0 dBFSを超えて歪むことがある。 */
 export const VOLUME_MIN_DB = -30
 export const VOLUME_MAX_DB = 6
-const VOLUME_KEY = 'livebin.volumeDb'
+const VOLUME_KEY = 'tottemolive.volumeDb'
 
 function loadVolume(): number {
   try {
