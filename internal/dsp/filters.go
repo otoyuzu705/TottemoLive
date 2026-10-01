@@ -71,3 +71,16 @@ func (b *Biquad) Process(x []float32) {
 		x[i] = float32(b.ProcessSample(float64(v)))
 	}
 }
+
+// LR4LowPass は4次のLinkwitz-Riley低域通過(2次Butterworthを2段)をその場で掛ける。
+// 同じ周波数の LR4HighPass との合計は、位相はずれるが振幅はフラット(全域通過)になる。
+func LR4LowPass(x []float32, fs, f0 float64) {
+	LowPass(fs, f0).Process(x)
+	LowPass(fs, f0).Process(x)
+}
+
+// LR4HighPass は4次のLinkwitz-Riley高域通過をその場で掛ける。
+func LR4HighPass(x []float32, fs, f0 float64) {
+	HighPass(fs, f0).Process(x)
+	HighPass(fs, f0).Process(x)
+}
