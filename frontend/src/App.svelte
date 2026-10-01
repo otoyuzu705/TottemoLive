@@ -7,6 +7,7 @@
   import ParamPanel from './lib/ParamPanel.svelte'
   import Waveform from './lib/Waveform.svelte'
   import Transport from './lib/Transport.svelte'
+  import Timeline from './lib/Timeline.svelte'
   import ExportDialog from './lib/ExportDialog.svelte'
 
   let showExport = $state(false)
@@ -54,6 +55,7 @@
   <footer>
     <Transport />
     <Waveform />
+    <Timeline />
   </footer>
 
   {#if app.toast}
