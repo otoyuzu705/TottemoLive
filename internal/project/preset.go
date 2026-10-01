@@ -24,6 +24,7 @@ type SoundCrowd struct {
 // 別の曲にそのまま適用できる。
 type SoundPreset struct {
 	PA      PA         `json:"pa"`
+	Sub     Sub        `json:"sub"`
 	Spatial Spatial    `json:"spatial"`
 	Reverb  Reverb     `json:"reverb"`
 	Crowd   SoundCrowd `json:"crowd"`
@@ -33,7 +34,7 @@ type SoundPreset struct {
 // ExtractSoundPreset はプロジェクトから音作りプリセットの部分を取り出す。
 func ExtractSoundPreset(p Project) SoundPreset {
 	return SoundPreset{
-		PA: p.PA, Spatial: p.Spatial, Reverb: p.Reverb, Output: p.Output,
+		PA: p.PA, Sub: p.Sub, Spatial: p.Spatial, Reverb: p.Reverb, Output: p.Output,
 		Crowd: SoundCrowd{Density: p.Crowd.Density, LevelDb: p.Crowd.LevelDb, SpreadM: p.Crowd.SpreadM, Seed: p.Crowd.Seed},
 	}
 }
@@ -41,7 +42,7 @@ func ExtractSoundPreset(p Project) SoundPreset {
 // ApplySoundPreset はプリセットの値を反映したプロジェクトを返す(範囲に丸める)。
 func (p Project) ApplySoundPreset(sp SoundPreset) Project {
 	p = p.Clone()
-	p.PA, p.Spatial, p.Reverb, p.Output = sp.PA, sp.Spatial, sp.Reverb, sp.Output
+	p.PA, p.Sub, p.Spatial, p.Reverb, p.Output = sp.PA, sp.Sub, sp.Spatial, sp.Reverb, sp.Output
 	p.Crowd.Density, p.Crowd.LevelDb, p.Crowd.SpreadM, p.Crowd.Seed = sp.Crowd.Density, sp.Crowd.LevelDb, sp.Crowd.SpreadM, sp.Crowd.Seed
 	p.Normalize()
 	return p
