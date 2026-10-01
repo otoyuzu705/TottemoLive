@@ -60,30 +60,7 @@ func TruePeakLimit(buf [][]float32, sr int, ceilingDb float64) {
 	n := len(buf[0])
 	ceil := DbToLin(ceilingDb)
 
-	// 必要ゲインの計算は各サンプルが独立なので、区間に分けて並列に求める
-	need := make([]float32, n)
-	workers := runtime.GOMAXPROCS(0)
-	chunk := (n + workers - 1) / workers
-	var wg sync.WaitGroup
-	for lo := 0; lo < n; lo += chunk {
-		hi := min(lo+chunk, n)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := lo; i < hi; i++ {
-				p := 0.0
-				for _, ch := range buf {
-					p = math.Max(p, truePeak(ch, i))
-				}
-				if p > ceil {
-					need[i] = float32(ceil / p)
-				} else {
-					need[i] = 1
-				}
-			}
-		}()
-	}
-	wg.Wait()
+	need := computeNeed(buf, ceil, true)
 
 	look := max(int(limiterLookaheadMs*1e-3*float64(sr)), 1)
 	gmin := slidingMin(need, look)
@@ -133,4 +110,77 @@ func slidingMin(x []float32, w int) []float32 {
 		}
 	}
 	return out
+}
+
+// guardBlock は、トゥルーピークの計算を省けるか判定する単位(サンプル数)。
+const guardBlock = 32
+
+// interpGain は補間値の絶対値の上限が、近傍のサンプル最大値の何倍までかを表す(各位相のFIRの係数の絶対値の和の最大)。
+var interpGain = func() float64 {
+	g := 1.0
+	for ph := 1; ph < truePeakOversample; ph++ {
+		sum := 0.0
+		for _, v := range truePeakFIR[ph] {
+			sum += math.Abs(v)
+		}
+		g = math.Max(g, sum)
+	}
+	return g
+}()
+
+// computeNeed は各サンプルで必要なゲイン(上限を超えなければ1)を返す。各サンプルが独立なので区間に分けて並列に求める。
+// guard が true のときは、近傍(±truePeakTaps/2 サンプル)の最大値 × interpGain が上限以下の
+// ブロックでは、補間値も上限以下だと分かるのでトゥルーピークの計算を省く。結果は変わらない。
+func computeNeed(buf [][]float32, ceil float64, guard bool) []float32 {
+	n := len(buf[0])
+	need := make([]float32, n)
+	workers := runtime.GOMAXPROCS(0)
+	chunk := (n + workers - 1) / workers
+	var wg sync.WaitGroup
+	for lo := 0; lo < n; lo += chunk {
+		hi := min(lo+chunk, n)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for b := lo; b < hi; b += guardBlock {
+				end := min(b+guardBlock, hi)
+				if guard && localMax(buf, b-truePeakTaps/2, end+truePeakTaps/2)*interpGain <= ceil {
+					for i := b; i < end; i++ {
+						need[i] = 1
+					}
+					continue
+				}
+				for i := b; i < end; i++ {
+					p := 0.0
+					for _, ch := range buf {
+						p = math.Max(p, truePeak(ch, i))
+					}
+					if p > ceil {
+						need[i] = float32(ceil / p)
+					} else {
+						need[i] = 1
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return need
+}
+
+// localMax は [from, to) の範囲(信号の外は無視)の最大絶対値(全チャンネル)。
+func localMax(buf [][]float32, from, to int) float64 {
+	from, to = max(from, 0), min(to, len(buf[0]))
+	m := float32(0)
+	for _, ch := range buf {
+		for _, v := range ch[from:to] {
+			if v < 0 {
+				v = -v
+			}
+			if v > m {
+				m = v
+			}
+		}
+	}
+	return float64(m)
 }

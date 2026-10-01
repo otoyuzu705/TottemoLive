@@ -224,3 +224,35 @@ func TestTruePeakLimit(t *testing.T) {
 		}
 	}
 }
+
+// 計算を省く判定(ガード)は、省いた場合と結果が完全に同じ。かつ静かな区間では実際に省ける。
+func TestLimiterGuardKeepsResult(t *testing.T) {
+	const sr = 48000
+	rng := rand.New(rand.NewSource(3))
+	// 静かな区間、ピークが上限付近の区間、サンプル間ピークが出る大振幅の区間を並べる
+	x := make([]float32, 3*sr)
+	copy(x, sine(300, 0.1, sr, sr))
+	copy(x[sr:], sine(1000, 0.9, sr/2, sr))
+	copy(x[sr+sr/2:], sine(11025, 1.4, sr/2, sr))
+	for i := 2 * sr; i < 3*sr; i++ {
+		x[i] = (rng.Float32()*2 - 1) * 0.3
+	}
+	buf := [][]float32{x, append([]float32(nil), x...)}
+	ceil := DbToLin(-1)
+	with, without := computeNeed(buf, ceil, true), computeNeed(buf, ceil, false)
+	skippable := 0
+	for i := range with {
+		if with[i] != without[i] {
+			t.Fatalf("guard changed need[%d]: %v vs %v", i, with[i], without[i])
+		}
+		if without[i] == 1 && localMax(buf, i-truePeakTaps/2, i+truePeakTaps/2)*interpGain <= ceil {
+			skippable++
+		}
+	}
+	if skippable < sr { // 静かな最初の1秒は省ける
+		t.Errorf("guard rarely applies: %d samples", skippable)
+	}
+	if interpGain < 1 || interpGain > 3 {
+		t.Errorf("interpGain=%v", interpGain)
+	}
+}
