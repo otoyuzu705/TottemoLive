@@ -2,6 +2,7 @@ package dsp
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
 	"testing"
@@ -23,34 +24,91 @@ func rms(x []float32) float64 {
 	return math.Sqrt(s / float64(len(x)))
 }
 
+func direct(x, h []float32, o int) float64 {
+	sum := 0.0
+	for k := range h {
+		if j := o - k; j >= 0 && j < len(x) {
+			sum += float64(x[j]) * float64(h[k])
+		}
+	}
+	return sum
+}
+
+func randSignal(rng *rand.Rand, n int) []float32 {
+	x := make([]float32, n)
+	for i := range x {
+		x[i] = rng.Float32()*2 - 1
+	}
+	return x
+}
+
+func checkConv(t *testing.T, name string, got []float32, x, h []float32, step int) {
+	t.Helper()
+	if len(got) != len(x)+len(h)-1 {
+		t.Fatalf("%s: len=%d want %d", name, len(got), len(x)+len(h)-1)
+	}
+	for o := 0; o < len(got); o += step {
+		if want := direct(x, h, o); math.Abs(float64(got[o])-want) > 1e-3 {
+			t.Fatalf("%s: o=%d got %v want %v", name, o, got[o], want)
+		}
+	}
+}
+
+// 公開のConvolveが、IR長ごとの分岐(短いIR・分割サイズ)をまたいで直接計算と一致する。
 func TestConvolveMatchesDirect(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
-	for _, c := range []struct{ nx, nh int }{{5000, 100}, {3000, 3500}, {1, 1}, {1024, 1024}, {100, 5000}} {
-		x := make([]float32, c.nx)
-		h := make([]float32, c.nh)
-		for i := range x {
-			x[i] = rng.Float32()*2 - 1
-		}
-		for i := range h {
-			h[i] = rng.Float32()*2 - 1
-		}
+	cases := []struct{ nx, nh int }{
+		{5000, 100}, {1, 1}, {7, 300}, {20000, shortIRMax}, {20000, shortIRMax + 1}, // 短い/境界
+		{3000, 3500}, {1024, 1024}, {100, 5000}, {60000, 20000}, {30000, 140000}, // 長い(分割サイズが変わる)
+	}
+	for _, c := range cases {
+		x, h := randSignal(rng, c.nx), randSignal(rng, c.nh)
 		got, err := Convolve(context.Background(), x, h)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != c.nx+c.nh-1 {
-			t.Fatalf("len=%d want %d", len(got), c.nx+c.nh-1)
+		checkConv(t, "Convolve", got, x, h, 97)
+	}
+}
+
+// 分割サイズをどれにしても結果は同じ(分割サイズはIR長の倍数でなくてもよい)。
+// 左右ペアの畳み込みは、別々に畳み込んだ結果と一致する(IR長が違っても、長い/短いが混ざっても)。
+func TestConvolvePair(t *testing.T) {
+	rng := rand.New(rand.NewSource(4))
+	for _, c := range []struct{ nx, na, nb int }{
+		{10000, 192, 192}, {10000, 100, 400}, {5, 192, 192}, {10000, 192, 3000}, {10000, 2000, 3000},
+	} {
+		x, a, b := randSignal(rng, c.nx), randSignal(rng, c.na), randSignal(rng, c.nb)
+		ya, yb, err := ConvolvePair(context.Background(), x, a, b)
+		if err != nil {
+			t.Fatal(err)
 		}
-		for o := 0; o < len(got); o += 7 {
-			want := 0.0
-			for k := 0; k < c.nh; k++ {
-				if j := o - k; j >= 0 && j < c.nx {
-					want += float64(x[j]) * float64(h[k])
-				}
-			}
-			if math.Abs(float64(got[o])-want) > 1e-3 {
-				t.Fatalf("nx=%d nh=%d o=%d got %v want %v", c.nx, c.nh, o, got[o], want)
-			}
+		checkConv(t, "pair A", ya, x, a, 53)
+		checkConv(t, "pair B", yb, x, b, 53)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := ConvolvePair(ctx, make([]float32, 200000), make([]float32, 100), make([]float32, 100)); err == nil {
+		t.Error("expected cancellation error")
+	}
+}
+
+func TestConvolvePartitionedAnyBlock(t *testing.T) {
+	rng := rand.New(rand.NewSource(2))
+	x, h := randSignal(rng, 40000), randSignal(rng, 9000)
+	for _, B := range []int{1024, 2048, 4096, 8192, 16384} {
+		got, err := convolvePartitioned(context.Background(), x, h, B)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkConv(t, fmt.Sprintf("B=%d", B), got, x, h, 101)
+	}
+}
+
+func TestPartitionSize(t *testing.T) {
+	for irLen, want := range map[int]int{513: BlockSize, 16000: BlockSize, 40000: 2560/1*0 + 4096, 149760: maxPartition, 1 << 22: maxPartition} {
+		if got := partitionSize(irLen); got != want {
+			t.Errorf("partitionSize(%d)=%d want %d", irLen, got, want)
 		}
 	}
 }
@@ -185,5 +243,37 @@ func TestTruePeakLimit(t *testing.T) {
 		if math.Abs(float64(y[i]-z[i])) > 1e-6 {
 			t.Fatal("limiter altered a quiet signal")
 		}
+	}
+}
+
+// 計算を省く判定(ガード)は、省いた場合と結果が完全に同じ。かつ静かな区間では実際に省ける。
+func TestLimiterGuardKeepsResult(t *testing.T) {
+	const sr = 48000
+	rng := rand.New(rand.NewSource(3))
+	// 静かな区間、ピークが上限付近の区間、サンプル間ピークが出る大振幅の区間を並べる
+	x := make([]float32, 3*sr)
+	copy(x, sine(300, 0.1, sr, sr))
+	copy(x[sr:], sine(1000, 0.9, sr/2, sr))
+	copy(x[sr+sr/2:], sine(11025, 1.4, sr/2, sr))
+	for i := 2 * sr; i < 3*sr; i++ {
+		x[i] = (rng.Float32()*2 - 1) * 0.3
+	}
+	buf := [][]float32{x, append([]float32(nil), x...)}
+	ceil := DbToLin(-1)
+	with, without := computeNeed(buf, ceil, true), computeNeed(buf, ceil, false)
+	skippable := 0
+	for i := range with {
+		if with[i] != without[i] {
+			t.Fatalf("guard changed need[%d]: %v vs %v", i, with[i], without[i])
+		}
+		if without[i] == 1 && localMax(buf, i-truePeakTaps/2, i+truePeakTaps/2)*interpGain <= ceil {
+			skippable++
+		}
+	}
+	if skippable < sr { // 静かな最初の1秒は省ける
+		t.Errorf("guard rarely applies: %d samples", skippable)
+	}
+	if interpGain < 1 || interpGain > 3 {
+		t.Errorf("interpGain=%v", interpGain)
 	}
 }

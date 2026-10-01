@@ -2,12 +2,13 @@ package render
 
 import (
 	"context"
+	"errors"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
-	"time"
 
 	"livebin/internal/audio"
 	"livebin/internal/project"
@@ -145,13 +146,19 @@ func TestParametersAffectOutput(t *testing.T) {
 	}
 }
 
+// 処理段階に入った時点でキャンセルすると、エラーで止まる(処理の速さに依らない)。
 func TestCancel(t *testing.T) {
-	dir := t.TempDir()
-	p := testProject(makeSource(t, dir))
+	p := testProject(makeSource(t, t.TempDir()))
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(300*time.Millisecond, cancel)
-	if _, err := Render(ctx, p, nil); err == nil {
-		t.Error("expected cancellation error")
+	defer cancel()
+	var once sync.Once
+	_, err := Render(ctx, p, func(stage string, ratio float64) {
+		if stage == StageProcess {
+			once.Do(cancel)
+		}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
 

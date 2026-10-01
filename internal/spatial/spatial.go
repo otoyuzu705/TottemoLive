@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"sync"
 
 	"livebin/internal/dsp"
 )
@@ -100,21 +99,9 @@ func Direct(ctx context.Context, in []float32, sr int, dist, azDeg, elDeg float6
 		dsp.LowPass(float64(sr), fc).Process(x)
 	}
 	h := set.Lookup(azDeg, elDeg)
-	out := make([][]float32, 2)
-	errs := make([]error, 2)
-	var wg sync.WaitGroup
-	for c, ir := range [][]float32{h.L, h.R} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			out[c], errs[c] = dsp.Convolve(ctx, x, ir)
-		}()
+	earL, earR, err := dsp.ConvolvePair(ctx, x, h.L, h.R)
+	if err != nil {
+		return nil, err
 	}
-	wg.Wait()
-	for _, err := range errs {
-		if err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
+	return [][]float32{earL, earR}, nil
 }

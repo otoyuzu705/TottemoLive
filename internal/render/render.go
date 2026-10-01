@@ -104,11 +104,8 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 	}
 	p = pp.p
 
-	// 1. デコード(並列)
-	srcs, err := e.decodeStage(ctx, p.Sources, prog)
-	if err != nil {
-		return nil, err
-	}
+	// 1. 音源(デコードは、その結果を使う段が必要としたときに行う)
+	srcs := e.sources(p.Sources, prog)
 
 	// 2. 処理
 	steps := newSteps(prog, StageProcess, len(srcs)+4)
@@ -116,14 +113,15 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 	if err != nil {
 		return nil, err
 	}
-	bus := sumBus(pa.bufs)
+	bus := &lazyBus{bufs: pa.bufs} // 直接音・残響が両方キャッシュに当たるときは、バスを作らない
+	songLen := busLen(pa.bufs)
 
 	ir := venue.BuildIR(pp.pr, p.Reverb, sampleRate)
 	// 各段の出力の長さは、残響パラメーターを範囲の上限まで振っても収まる値に固定する
 	// (IRの長さがキーに入ると、残響を動かしたとき直接音・客席まで再計算になるため)。
 	// 実際の長さ(曲 + 現在のIRの尾)へは、ミックスの前に切り詰める
-	total := len(bus[0]) + maxTailSamples(pp.pr)
-	outLen := len(bus[0]) + len(ir[0])
+	total := songLen + maxTailSamples(pp.pr)
+	outLen := songLen + len(ir[0])
 
 	// 3つの系統は互いに独立なので並列に回す
 	var direct, reverb, crowdSig [][]float32
@@ -175,50 +173,44 @@ func maxTailSamples(pr venue.Preset) int {
 	return int(math.Ceil(sec * sampleRate))
 }
 
-// stageOut は段の出力とそのキャッシュキー。bufs は読み取り専用(キャッシュと共有される)。
+// stageOut は上流の段を表す。key はキャッシュキー、load は出力を作る(デコードなど)。
+// 出力を必要とする段(キャッシュに当たらなかった段)だけが load を呼ぶ。
 type stageOut struct {
 	key  string
-	bufs [][]float32
+	load func(ctx context.Context) ([][]float32, error)
 }
 
-// decodeStage は全音源を並列にデコードする。キャッシュキーはファイルの同一性。
-func (e *Engine) decodeStage(ctx context.Context, sources []project.Source, prog Progress) ([]stageOut, error) {
+// sources は各音源のデコードを上流の段として用意する。デコード結果はキャッシュしない
+// (ffmpegでのデコードは4分の曲で0.3秒ほどで、キャッシュするとその曲ぶんのメモリを常に占める)。
+// キャッシュキーはファイルの同一性(パス・サイズ・更新時刻)で、ゲインはPA段が読む。
+func (e *Engine) sources(sources []project.Source, prog Progress) []stageOut {
 	out := make([]stageOut, len(sources))
-	errs := make([]error, len(sources))
 	ratios := make([]float64, len(sources))
 	var mu sync.Mutex
-	var wg sync.WaitGroup
+	report := func(i int, r float64) {
+		mu.Lock()
+		ratios[i] = r
+		sum := 0.0
+		for _, v := range ratios {
+			sum += v
+		}
+		mu.Unlock()
+		prog.report(StageDecode, sum/float64(len(ratios)))
+	}
 	for i, s := range sources {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			// 読むもの: ファイル(パス・サイズ・更新時刻)だけ。ゲインはPA段が読む
-			key := hashKey(fileIdentity(s.Path))
-			bufs, err := memo(e.cache, fmt.Sprintf("decode:%d", i), key, func() ([][]float32, error) {
-				return audio.Decode(ctx, s.Path, sampleRate, func(r float64) {
-					mu.Lock()
-					ratios[i] = r
-					sum := 0.0
-					for _, v := range ratios {
-						sum += v
-					}
-					mu.Unlock()
-					prog.report(StageDecode, sum/float64(len(ratios)))
-				})
-			})
-			out[i] = stageOut{key: key, bufs: bufs}
-			errs[i] = err
-		}()
+		out[i] = stageOut{
+			key: hashKey(fileIdentity(s.Path)),
+			load: func(ctx context.Context) ([][]float32, error) {
+				e.decodes.Add(1)
+				buf, err := audio.Decode(ctx, s.Path, sampleRate, func(r float64) { report(i, r) })
+				if err == nil {
+					report(i, 1)
+				}
+				return buf, err
+			},
+		}
 	}
-	wg.Wait()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := errors.Join(errs...); err != nil {
-		return nil, err
-	}
-	prog.report(StageDecode, 1)
-	return out, nil
+	return out
 }
 
 // paResult は PA段の出力(音源ごと)と、全音源ぶんを合わせたキー。
@@ -241,7 +233,10 @@ func (e *Engine) paStage(ctx context.Context, p project.Project, srcs []stageOut
 			defer steps.done()
 			keys[i] = hashKey(srcs[i].key, p.Sources[i].GainDb, p.PA)
 			res.bufs[i], errs[i] = memo(e.cache, fmt.Sprintf("pa:%d", i), keys[i], func() ([][]float32, error) {
-				buf := cloneBuf(srcs[i].bufs) // applyPAはその場で書き換えるので、キャッシュ内のデコード結果は触らない
+				buf, err := srcs[i].load(ctx) // デコード結果は他で使わないので、その場で処理してよい
+				if err != nil {
+					return nil, err
+				}
 				applyPA(buf, sampleRate, p.Sources[i].GainDb, p.PA)
 				return buf, nil
 			})
@@ -255,12 +250,25 @@ func (e *Engine) paStage(ctx context.Context, p project.Project, srcs []stageOut
 	return res, errors.Join(errs...)
 }
 
-func cloneBuf(b [][]float32) [][]float32 {
-	out := make([][]float32, len(b))
-	for c := range b {
-		out[c] = append([]float32(nil), b[c]...)
+// busLen は音源ごとのPA出力のうち最長のもの(バスの長さ)。
+func busLen(bufs [][][]float32) int {
+	n := 0
+	for _, s := range bufs {
+		n = max(n, len(s[0]))
 	}
-	return out
+	return n
+}
+
+// lazyBus はPA出力の合計(バス)を、最初に必要とされたときに一度だけ作る。
+type lazyBus struct {
+	once sync.Once
+	bufs [][][]float32
+	bus  [][]float32
+}
+
+func (b *lazyBus) get() [][]float32 {
+	b.once.Do(func() { b.bus = sumBus(b.bufs) })
+	return b.bus
 }
 
 // sumBus は音源ごとのPA出力を足し合わせる。長さは最長の音源にそろえる。
@@ -301,35 +309,47 @@ func applyPA(buf [][]float32, sr int, gainDb float64, pa project.PA) {
 // スピーカーが1本ならモノラル和を、2本以上ならチャンネルを順に割り当てる(L,R,L,R...)。
 // 読むもの: リスナー、スピーカー位置、spatial.hrirSet / distanceRolloff / airAbsorption、PAの出力、長さ。
 // (spatial.directLevelDb はミックス段が読む)
-func (e *Engine) directStage(ctx context.Context, pp *prepared, bus [][]float32, paKey string, total int) ([][]float32, error) {
+func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, paKey string, total int) ([][]float32, error) {
 	p := pp.p
 	key := hashKey(paKey, total, p.Listener, p.Venue.Speakers,
 		p.Spatial.HrirSet, p.Spatial.DistanceRolloff, p.Spatial.AirAbsorption)
 	return memo(e.cache, "direct", key, func() ([][]float32, error) {
 		spk := p.Venue.Speakers
-		res := make([][][]float32, len(spk))
+		in := bus.get()
+		out := [][]float32{make([]float32, total), make([]float32, total)}
+		// スピーカーごとに並列に計算し、できた順ではなくスピーカーの順に足し込む。
+		// 全スピーカーぶんの結果を同時に持たず、足し算の順序も固定になる
+		turn := make([]chan struct{}, len(spk))
+		for i := range turn {
+			turn[i] = make(chan struct{})
+		}
 		errs := make([]error, len(spk))
 		var wg sync.WaitGroup
 		for i, s := range spk {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				feed := speakerFeed(bus, i, len(spk))
+				defer close(turn[i])
+				feed := speakerFeed(in, i, len(spk))
 				az, el, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
-				res[i], errs[i] = spatial.Direct(ctx, feed, sampleRate, d, az, el, pp.set, spatial.DirectParams{
+				r, err := spatial.Direct(ctx, feed, sampleRate, d, az, el, pp.set, spatial.DirectParams{
 					Rolloff: p.Spatial.DistanceRolloff, AirAbsorption: p.Spatial.AirAbsorption,
 				})
+				if i > 0 {
+					<-turn[i-1]
+				}
+				if err != nil {
+					errs[i] = err
+					return
+				}
+				for c := range out {
+					addInto(out[c], r[c])
+				}
 			}()
 		}
 		wg.Wait()
 		if err := errors.Join(errs...); err != nil {
 			return nil, err
-		}
-		out := [][]float32{make([]float32, total), make([]float32, total)}
-		for _, r := range res {
-			for c := range out {
-				addInto(out[c], r[c])
-			}
 		}
 		return out, nil
 	})
@@ -349,13 +369,14 @@ func speakerFeed(bus [][]float32, i, count int) []float32 {
 // reverbStage はPA出力のモノラル和を会場IR(左右)で畳み込む。
 // 残響は距離減衰を掛ける前の信号で駆動する(拡散音場のレベルは距離に依らないため)。
 // 読むもの: 会場、reverb.preDelayMs / decayScale / highDampHz、PAの出力、長さ。(reverb.mix はミックス段)
-func (e *Engine) reverbStage(ctx context.Context, pp *prepared, bus, ir [][]float32, paKey string, total int) ([][]float32, error) {
+func (e *Engine) reverbStage(ctx context.Context, pp *prepared, bus *lazyBus, ir [][]float32, paKey string, total int) ([][]float32, error) {
 	r := pp.p.Reverb
 	key := hashKey(paKey, total, pp.p.Venue.Preset, r.PreDelayMs, r.DecayScale, r.HighDampHz)
 	return memo(e.cache, "reverb", key, func() ([][]float32, error) {
-		mono := make([]float32, len(bus[0]))
+		in := bus.get()
+		mono := make([]float32, len(in[0]))
 		for i := range mono {
-			mono[i] = (bus[0][i] + bus[1][i]) / 2
+			mono[i] = (in[0][i] + in[1][i]) / 2
 		}
 		out := [][]float32{make([]float32, total), make([]float32, total)}
 		errs := make([]error, 2)
