@@ -69,6 +69,10 @@ var specs = []ParamSpec{
 	f("reverb.preDelayMs", "プリディレイ", "reverb", "ms", 0, 150, 1, 40),
 	f("reverb.decayScale", "残響の長さ", "reverb", "倍", 0.5, 1.2, 0.01, 1.0),
 	logScale(f("reverb.highDampHz", "残響の高域ダンプ", "reverb", "Hz", 2000, 16000, 100, 8000)),
+	f("reverb.lowCoherence", "低域の左右の相関", "reverb", "", 0, 1, 0.05, 1),
+	f("reverb.lowDecayScale", "低域の残響の長さ", "reverb", "倍", 0.5, 2.5, 0.05, 1.3),
+	f("reverb.lowLevelDb", "低域の残響レベル", "reverb", "dB", -12, 12, 0.5, 3),
+	advanced(logScale(f("reverb.lowCrossoverHz", "低域の境界周波数", "reverb", "Hz", 80, 500, 5, 250))),
 
 	f("crowd.density", "客席の密度", "crowd", "", 0, 1, 0.01, 0.7),
 	f("crowd.levelDb", "客席レベル", "crowd", "dB", -30, 6, 0.5, -6),

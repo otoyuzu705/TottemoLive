@@ -85,6 +85,12 @@ type Reverb struct {
 	PreDelayMs float64 `json:"preDelayMs"`
 	DecayScale float64 `json:"decayScale"`
 	HighDampHz float64 `json:"highDampHz"`
+	// 低域の残響。LowCrossoverHz 以下について、左右の相関(1で左右同じ信号 = 自然な拡散音場)、
+	// 残響の長さの倍率(実際の会場は低域ほど長く残る)、レベルを決める。
+	LowCoherence   float64 `json:"lowCoherence"`
+	LowDecayScale  float64 `json:"lowDecayScale"`
+	LowLevelDb     float64 `json:"lowLevelDb"`
+	LowCrossoverHz float64 `json:"lowCrossoverHz"`
 }
 
 type Keyframe struct {

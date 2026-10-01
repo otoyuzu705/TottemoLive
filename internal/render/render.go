@@ -169,7 +169,8 @@ func crop(buf [][]float32, n int) [][]float32 {
 func maxTailSamples(pr venue.Preset) int {
 	pre, _ := params.Find("reverb.preDelayMs")
 	decay, _ := params.Find("reverb.decayScale")
-	sec := venue.IRSeconds(pr, project.Reverb{PreDelayMs: pre.Max, DecayScale: decay.Max})
+	low, _ := params.Find("reverb.lowDecayScale")
+	sec := venue.IRSeconds(pr, project.Reverb{PreDelayMs: pre.Max, DecayScale: decay.Max, LowDecayScale: low.Max})
 	return int(math.Ceil(sec * sampleRate))
 }
 
@@ -409,10 +410,11 @@ func speakerFeed(bus [][]float32, i, count int) []float32 {
 
 // reverbStage はPA出力のモノラル和を会場IR(左右)で畳み込む。
 // 残響は距離減衰を掛ける前の信号で駆動する(拡散音場のレベルは距離に依らないため)。
-// 読むもの: 会場、reverb.preDelayMs / decayScale / highDampHz、PAの出力、長さ。(reverb.mix はミックス段)
+// 読むもの: 会場、reverb.preDelayMs / decayScale / highDampHz / low*(低域の残響)、PAの出力、長さ。(reverb.mix はミックス段)
 func (e *Engine) reverbStage(ctx context.Context, pp *prepared, bus *lazyBus, ir [][]float32, paKey string, total int) ([][]float32, error) {
 	r := pp.p.Reverb
-	key := hashKey(paKey, total, pp.p.Venue.Preset, r.PreDelayMs, r.DecayScale, r.HighDampHz)
+	key := hashKey(paKey, total, pp.p.Venue.Preset, r.PreDelayMs, r.DecayScale, r.HighDampHz,
+		r.LowCoherence, r.LowDecayScale, r.LowLevelDb, r.LowCrossoverHz)
 	return memo(e.cache, "reverb", key, func() ([][]float32, error) {
 		in := bus.get()
 		mono := make([]float32, len(in[0]))

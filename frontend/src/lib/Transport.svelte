@@ -1,6 +1,6 @@
 <script lang="ts">
   import { app } from './store.svelte'
-  import { player } from './player.svelte'
+  import { player, VOLUME_MAX_DB, VOLUME_MIN_DB } from './player.svelte'
   import { mmss } from './format'
 
   const hasPreview = $derived(player.loaded.processed)
@@ -29,8 +29,23 @@
     <button class:active={player.mode === 'processed'} disabled={!player.loaded.processed} onclick={() => player.setMode('processed')}>B 加工後</button>
   </div>
 
+  <div class="volume" class:hot={player.volumeDb > 0 && !player.muted} title="再生音量。聞こえ方だけを変えるので再計算は不要です(プレビュー専用で、書き出しには反映されません)。ダブルクリックで 0 dB">
+    <button class="icon" onclick={() => player.toggleMute()} aria-pressed={player.muted} aria-label="ミュート">{player.muted ? '🔇' : '🔊'}</button>
+    <input
+      type="range"
+      min={VOLUME_MIN_DB}
+      max={VOLUME_MAX_DB}
+      step="0.5"
+      value={player.volumeDb}
+      oninput={(e) => player.setVolume(parseFloat(e.currentTarget.value))}
+      ondblclick={() => player.setVolume(0)}
+      aria-label="再生音量(dB)"
+    />
+    <span class="vol">{player.muted ? 'ミュート' : `${player.volumeDb > 0 ? '+' : ''}${player.volumeDb.toFixed(1)} dB`}</span>
+  </div>
+
   <span class="pos">{mmss(player.position)} / {mmss(total)}</span>
-  <span class="hint">波形をクリック・ドラッグで再生位置を移動 / Space で再生・停止</span>
+  <span class="hint">波形をクリック・ドラッグで再生位置を移動 / Space で再生・停止 / 音量は再計算なしで変わります(プレビュー専用)</span>
 
   <div class="status" aria-live="polite">
     {#if app.busy > 0}<span class="spin"></span> 曲全体を処理中…{:else if hasPreview}<span class="ok">● 最新</span>{/if}
@@ -45,6 +60,10 @@
   .ab button:first-child { border-radius: 5px 0 0 5px; }
   .ab button:last-child { border-radius: 0 5px 5px 0; margin-left: -1px; }
   .ab button.active { background: var(--accent-dim); border-color: var(--accent); }
+  .volume { display: flex; align-items: center; gap: 6px; }
+  .volume input { width: 110px; }
+  .vol { min-width: 5.5em; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .volume.hot .vol { color: var(--warn); }
   .pos { font-variant-numeric: tabular-nums; color: var(--text); }
   .hint { color: var(--muted); font-size: 11px; }
   .status { margin-left: auto; color: var(--muted); display: flex; align-items: center; gap: 6px; }
