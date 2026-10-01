@@ -307,14 +307,17 @@ func applyPA(buf [][]float32, sr int, gainDb float64, pa project.PA) {
 
 // directStage は左右のPAスピーカーを仮想スピーカーとして置き、リスナーの耳に届く直接音を返す。
 // スピーカーが1本ならモノラル和を、2本以上ならチャンネルを順に割り当てる(L,R,L,R...)。
-// 読むもの: リスナー、スピーカー位置、spatial.hrirSet / distanceRolloff / airAbsorption、PAの出力、長さ。
+// サブウーファーが有効なときは、PA出力をクロスオーバーで分け、メインには中高域だけを送り、
+// 低域はサブ経路(左右のモノ和 → 距離減衰・遅延 → 両耳に同じ信号)で足す。
+// 読むもの: リスナー、メイン・サブの位置、sub.*、spatial.hrirSet / distanceRolloff / airAbsorption、PAの出力、長さ。
 // (spatial.directLevelDb はミックス段が読む)
 func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, paKey string, total int) ([][]float32, error) {
 	p := pp.p
-	key := hashKey(paKey, total, p.Listener, p.Venue.Speakers,
+	key := hashKey(paKey, total, p.Listener, p.Venue.Speakers, p.Venue.Subs, p.Sub,
 		p.Spatial.HrirSet, p.Spatial.DistanceRolloff, p.Spatial.AirAbsorption)
 	return memo(e.cache, "direct", key, func() ([][]float32, error) {
 		spk := p.Venue.Speakers
+		subOn := p.Sub.Enabled == "on" && len(p.Venue.Subs) > 0
 		in := bus.get()
 		out := [][]float32{make([]float32, total), make([]float32, total)}
 		// スピーカーごとに並列に計算し、できた順ではなくスピーカーの順に足し込む。
@@ -331,6 +334,11 @@ func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, pa
 				defer wg.Done()
 				defer close(turn[i])
 				feed := speakerFeed(in, i, len(spk))
+				if subOn {
+					// 低域はサブが受け持つので、メインは中高域だけにする(元のバスは他の経路が使うので複製して掛ける)
+					feed = append([]float32(nil), feed...)
+					dsp.LR4HighPass(feed, sampleRate, p.Sub.CrossoverHz)
+				}
 				az, el, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
 				r, err := spatial.Direct(ctx, feed, sampleRate, d, az, el, pp.set, spatial.DirectParams{
 					Rolloff: p.Spatial.DistanceRolloff, AirAbsorption: p.Spatial.AirAbsorption,
@@ -351,8 +359,41 @@ func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, pa
 		if err := errors.Join(errs...); err != nil {
 			return nil, err
 		}
+		if subOn {
+			addSubs(out, in, p)
+		}
 		return out, nil
 	})
+}
+
+// addSubs はサブウーファー経路を out(両耳)に足す。
+// バスの左右の合計(モノ)の低域を、サブの台数で割って(合計が levelDb になるように)、
+// サブごとに距離減衰・遅延を掛けて両耳に同じ信号として足す。
+// 左右の合計にするのは、中央に定位した低音(左右同じ信号)がメイン2本でコヒーレントに足される大きさ(+6 dB)に
+// 合わせるため。これで levelDb 0 が「メインの低域と同じ大きさ」になる。
+func addSubs(out, bus [][]float32, p project.Project) {
+	mono := make([]float32, len(bus[0]))
+	for i := range mono {
+		mono[i] = bus[0][i] + bus[1][i]
+	}
+	dsp.LR4LowPass(mono, sampleRate, p.Sub.CrossoverHz)
+	g := float32(dsp.DbToLin(p.Sub.LevelDb) / float64(len(p.Venue.Subs)))
+	for i := range mono {
+		mono[i] *= g
+	}
+	// メインの代表距離(サブの遅延をメインに合わせる基準)
+	mains := 0.0
+	for _, s := range p.Venue.Speakers {
+		_, _, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
+		mains += d / float64(len(p.Venue.Speakers))
+	}
+	for _, s := range p.Venue.Subs {
+		_, _, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
+		sig := spatial.Sub(mono, sampleRate, d, mains, p.Spatial.DistanceRolloff)
+		for c := range out {
+			addInto(out[c], sig)
+		}
+	}
 }
 
 func speakerFeed(bus [][]float32, i, count int) []float32 {

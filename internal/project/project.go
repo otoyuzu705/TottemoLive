@@ -66,7 +66,7 @@ type PA struct {
 
 // Sub はサブウーファー経路の設定。Enabled は "off" / "on"。
 // 有効なとき、PA出力を CrossoverHz で分け、低域はサブへ、中高域はメインへ送る。
-// LevelDb 0 でサブ合計の低域がメインの低域と同じ大きさ。
+// LevelDb 0 で、中央に定位した低音について、サブ合計の低域がメインの低域と同じ大きさ。
 type Sub struct {
 	Enabled     string  `json:"enabled"`
 	LevelDb     float64 `json:"levelDb"`
