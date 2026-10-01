@@ -11,7 +11,7 @@ import (
 func TestDefaultVenueMatchesArenaPreset(t *testing.T) {
 	arena, _ := Get("arena")
 	d := project.DefaultVenue()
-	if d.Preset != "arena" || !reflect.DeepEqual(d.Speakers, arena.Speakers) {
+	if d.Preset != "arena" || !reflect.DeepEqual(d.Speakers, arena.Speakers) || !reflect.DeepEqual(d.Subs, arena.Subs) {
 		t.Errorf("project default venue differs from arena preset")
 	}
 	// 既定のリスナー(0,25)が部屋の中、既定の残響が表の既定値と一致
@@ -28,7 +28,7 @@ func TestApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if q.Venue.Preset != "livehouse" || q.Venue.Speakers[1].X != 3 || q.Reverb.PreDelayMs != 8 {
+	if q.Venue.Preset != "livehouse" || q.Venue.Speakers[1].X != 3 || q.Venue.Subs[1].X != 2 || q.Reverb.PreDelayMs != 8 {
 		t.Errorf("not applied: %+v", q.Venue)
 	}
 	if q.Listener.X != 6 || q.Listener.Y != 14 {

@@ -112,6 +112,7 @@ func TestSoundPresetRoundTrip(t *testing.T) {
 	p.Listener.X = 7
 	p.Crowd.Keyframes = []project.Keyframe{{T: 1, Cheer: 1}}
 	p.PA.LowCutHz = 100
+	p.Sub.LevelDb = 8
 	p.Crowd.Seed = 5
 	sp := project.ExtractSoundPreset(p)
 
@@ -120,7 +121,7 @@ func TestSoundPresetRoundTrip(t *testing.T) {
 	q.Sources = []project.Source{{ID: "b", Path: "/b.wav"}}
 	q.Listener.X = -3
 	r := q.ApplySoundPreset(sp)
-	if r.PA.LowCutHz != 100 || r.Crowd.Seed != 5 {
+	if r.PA.LowCutHz != 100 || r.Sub.LevelDb != 8 || r.Crowd.Seed != 5 {
 		t.Errorf("preset not applied: %+v", r.PA)
 	}
 	if r.Sources[0].ID != "b" || r.Listener.X != -3 || len(r.Crowd.Keyframes) != 0 {
@@ -190,5 +191,16 @@ func TestNormalizeCrowdTimeline(t *testing.T) {
 	want := []project.ClapRange{{Start: 0, End: 12}, {Start: 20, End: 30}}
 	if len(p.Crowd.ClapRanges) != 2 || p.Crowd.ClapRanges[0] != want[0] || p.Crowd.ClapRanges[1] != want[1] {
 		t.Errorf("clap ranges: %+v", p.Crowd.ClapRanges)
+	}
+}
+
+// 旧いプロジェクト(サブ・サブの位置を持たない)を読んでも、既定のサブ設定が入る。
+func TestParseOldProjectGetsSubDefaults(t *testing.T) {
+	p, err := project.Parse([]byte(`{"version":1,"venue":{"preset":"hall","speakers":[{"id":"L","x":-5,"y":0,"z":4},{"id":"R","x":5,"y":0,"z":4}]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Sub.Enabled != "on" || p.Sub.CrossoverHz != 90 || len(p.Venue.Subs) != 2 {
+		t.Errorf("sub defaults missing: %+v subs=%d", p.Sub, len(p.Venue.Subs))
 	}
 }

@@ -22,6 +22,7 @@ type Preset struct {
 	WidthM   float64           `json:"widthM"` // 客席側の横幅(x は ±WidthM/2)
 	DepthM   float64           `json:"depthM"` // ステージ中央から客席最後方までの距離(y は 0〜DepthM)
 	Speakers []project.Speaker `json:"speakers"`
+	Subs     []project.Speaker `json:"subs"`
 	Reverb   project.Reverb    `json:"reverb"`  // 残響パラメーターの既定値
 	RT60Sec  float64           `json:"rt60Sec"` // 会場IRの残響時間(decayScale=1)
 }
@@ -29,28 +30,39 @@ type Preset struct {
 var presets = []Preset{
 	{ID: "club", Name: "クラブ", WidthM: 8, DepthM: 10,
 		Speakers: speakers(2, 2),
+		Subs:     subs(1.2),
 		Reverb:   project.Reverb{Mix: 0.2, PreDelayMs: 5, DecayScale: 1, HighDampHz: 9000},
 		RT60Sec:  0.35},
 	{ID: "livehouse", Name: "ライブハウス", WidthM: 12, DepthM: 14,
 		Speakers: speakers(3, 2.5),
+		Subs:     subs(2),
 		Reverb:   project.Reverb{Mix: 0.25, PreDelayMs: 8, DecayScale: 1, HighDampHz: 7000},
 		RT60Sec:  0.5},
 	{ID: "hall", Name: "ホール", WidthM: 30, DepthM: 40,
 		Speakers: speakers(7, 6),
+		Subs:     subs(4),
 		Reverb:   project.Reverb{Mix: 0.35, PreDelayMs: 25, DecayScale: 1, HighDampHz: 6500},
 		RT60Sec:  1.8},
 	{ID: "arena", Name: "アリーナ", WidthM: 80, DepthM: 70,
 		Speakers: speakers(12, 8),
+		Subs:     subs(7),
 		Reverb:   project.Reverb{Mix: 0.35, PreDelayMs: 40, DecayScale: 1, HighDampHz: 8000},
 		RT60Sec:  2.8},
 	{ID: "outdoor", Name: "野外フェス", WidthM: 100, DepthM: 120,
 		Speakers: speakers(10, 6),
+		Subs:     subs(6),
 		Reverb:   project.Reverb{Mix: 0.12, PreDelayMs: 90, DecayScale: 1, HighDampHz: 7000},
 		RT60Sec:  0.7},
 	{ID: "dome", Name: "ドーム", WidthM: 120, DepthM: 100,
 		Speakers: speakers(18, 14),
+		Subs:     subs(10),
 		Reverb:   project.Reverb{Mix: 0.4, PreDelayMs: 70, DecayScale: 1, HighDampHz: 5500},
 		RT60Sec:  3.8},
+}
+
+// subs はステージ前の床の左右(中心から ±x m)に置く2発のサブウーファー。
+func subs(x float64) []project.Speaker {
+	return []project.Speaker{{ID: "SubL", X: -x, Y: 1, Z: 0.3}, {ID: "SubR", X: x, Y: 1, Z: 0.3}}
 }
 
 func speakers(x, z float64) []project.Speaker {
@@ -62,6 +74,7 @@ func List() []Preset {
 	out := make([]Preset, len(presets))
 	for i, p := range presets {
 		p.Speakers = append([]project.Speaker(nil), p.Speakers...)
+		p.Subs = append([]project.Speaker(nil), p.Subs...)
 		out[i] = p
 	}
 	return out
@@ -76,7 +89,7 @@ func Get(id string) (Preset, bool) {
 	return Preset{}, false
 }
 
-// Apply は会場を切り替える。venue.speakers と reverb.* をプリセットの値で上書きし、
+// Apply は会場を切り替える。venue.speakers・venue.subs と reverb.* をプリセットの値で上書きし、
 // リスナー位置を部屋の範囲内に収めたプロジェクトを返す。
 func Apply(p project.Project, id string) (project.Project, error) {
 	pr, ok := Get(id)
@@ -86,6 +99,7 @@ func Apply(p project.Project, id string) (project.Project, error) {
 	p = p.Clone()
 	p.Venue.Preset = id
 	p.Venue.Speakers = pr.Speakers
+	p.Venue.Subs = pr.Subs
 	p.Reverb = pr.Reverb
 	p.Listener.X = math.Min(math.Max(p.Listener.X, -pr.WidthM/2), pr.WidthM/2)
 	p.Listener.Y = math.Min(math.Max(p.Listener.Y, 0), pr.DepthM)

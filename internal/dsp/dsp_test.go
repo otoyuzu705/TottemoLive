@@ -277,3 +277,37 @@ func TestLimiterGuardKeepsResult(t *testing.T) {
 		t.Errorf("interpGain=%v", interpGain)
 	}
 }
+
+// クロスオーバー: 低域側・高域側それぞれが想定どおり減衰し、合計の振幅はフラットになる。
+func TestLR4Crossover(t *testing.T) {
+	const sr, fc = 48000, 90.0
+	for _, f := range []float64{20, 45, 90, 180, 360, 1000, 5000} {
+		x := sine(f, 1, 3*sr, sr)
+		lo := append([]float32(nil), x...)
+		hi := append([]float32(nil), x...)
+		LR4LowPass(lo, sr, fc)
+		LR4HighPass(hi, sr, fc)
+		sum := make([]float32, len(x))
+		for i := range sum {
+			sum[i] = lo[i] + hi[i]
+		}
+		from := 2 * sr // 立ち上がりを除く
+		gLo := rms(lo[from:]) / rms(x[from:])
+		gHi := rms(hi[from:]) / rms(x[from:])
+		gSum := rms(sum[from:]) / rms(x[from:])
+		if math.Abs(gSum-1) > 0.02 {
+			t.Errorf("%v Hz: sum gain %.3f (want 1)", f, gSum)
+		}
+		switch {
+		case f == fc:
+			// カットオフでは各側 -6 dB
+			if math.Abs(LinToDb(gLo)+6.02) > 0.3 || math.Abs(LinToDb(gHi)+6.02) > 0.3 {
+				t.Errorf("at fc: lo %.1f dB hi %.1f dB", LinToDb(gLo), LinToDb(gHi))
+			}
+		case f >= 4*fc && gLo > 0.01: // 2オクターブ上で -40 dB 以下(24 dB/oct)
+			t.Errorf("%v Hz: low side leaks %.1f dB", f, LinToDb(gLo))
+		case f <= fc/4 && gHi > 0.01:
+			t.Errorf("%v Hz: high side leaks %.1f dB", f, LinToDb(gHi))
+		}
+	}
+}

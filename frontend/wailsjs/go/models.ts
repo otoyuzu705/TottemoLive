@@ -233,6 +233,22 @@ export namespace project {
 	        this.directLevelDb = source["directLevelDb"];
 	    }
 	}
+	export class Sub {
+	    enabled: string;
+	    levelDb: number;
+	    crossoverHz: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Sub(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.levelDb = source["levelDb"];
+	        this.crossoverHz = source["crossoverHz"];
+	    }
+	}
 	export class Speaker {
 	    id: string;
 	    x: number;
@@ -254,6 +270,7 @@ export namespace project {
 	export class Venue {
 	    preset: string;
 	    speakers: Speaker[];
+	    subs: Speaker[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Venue(source);
@@ -263,6 +280,7 @@ export namespace project {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.preset = source["preset"];
 	        this.speakers = this.convertValues(source["speakers"], Speaker);
+	        this.subs = this.convertValues(source["subs"], Speaker);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -307,6 +325,7 @@ export namespace project {
 	    venue: Venue;
 	    listener: Listener;
 	    pa: PA;
+	    sub: Sub;
 	    spatial: Spatial;
 	    reverb: Reverb;
 	    crowd: Crowd;
@@ -323,6 +342,7 @@ export namespace project {
 	        this.venue = this.convertValues(source["venue"], Venue);
 	        this.listener = this.convertValues(source["listener"], Listener);
 	        this.pa = this.convertValues(source["pa"], PA);
+	        this.sub = this.convertValues(source["sub"], Sub);
 	        this.spatial = this.convertValues(source["spatial"], Spatial);
 	        this.reverb = this.convertValues(source["reverb"], Reverb);
 	        this.crowd = this.convertValues(source["crowd"], Crowd);
@@ -365,6 +385,7 @@ export namespace project {
 	
 	
 	
+	
 
 }
 
@@ -376,6 +397,7 @@ export namespace venue {
 	    widthM: number;
 	    depthM: number;
 	    speakers: project.Speaker[];
+	    subs: project.Speaker[];
 	    reverb: project.Reverb;
 	    rt60Sec: number;
 	
@@ -390,6 +412,7 @@ export namespace venue {
 	        this.widthM = source["widthM"];
 	        this.depthM = source["depthM"];
 	        this.speakers = this.convertValues(source["speakers"], project.Speaker);
+	        this.subs = this.convertValues(source["subs"], project.Speaker);
 	        this.reverb = this.convertValues(source["reverb"], project.Reverb);
 	        this.rt60Sec = source["rt60Sec"];
 	    }

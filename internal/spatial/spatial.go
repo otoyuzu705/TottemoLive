@@ -105,3 +105,18 @@ func Direct(ctx context.Context, in []float32, sr int, dist, azDeg, elDeg float6
 	}
 	return [][]float32{earL, earR}, nil
 }
+
+// Sub はサブウーファーの信号(低域のモノ)に、距離減衰と伝搬遅延を掛けて返す。
+// 低域は方向の手がかりが弱く、空気吸収も受けにくいので、HRIRも空気吸収も通さない(両耳に同じ信号を足す)。
+// 実際のPAと同じく、サブとメインの音がリスナーで揃うように遅延をそろえる:
+// 遅延は サブ自身の距離とメインの代表距離 alignDist の長いほうに合わせる(サブのほうが近いときだけサブを遅らせる)。
+// 減衰はサブ自身の距離で決まる。出力長は len(in)+遅延。
+func Sub(in []float32, sr int, dist, alignDist, rolloff float64) []float32 {
+	delay := DelaySamples(math.Max(dist, alignDist), sr)
+	g := float32(Gain(dist, rolloff))
+	out := make([]float32, delay+len(in))
+	for i, v := range in {
+		out[delay+i] = v * g
+	}
+	return out
+}

@@ -1,6 +1,6 @@
 {
   "pa": {
-    "lowCutHz": 60,
+    "lowCutHz": 35,
     "highShelfHz": 6000,
     "highShelfDb": -3,
     "compThresholdDb": -18,
