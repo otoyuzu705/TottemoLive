@@ -8,8 +8,7 @@
 // PAより後ろの段(距離・遅延・フィルタ・畳み込み)は線形なので、PAの出力を合流してから処理しても
 // 音源ごとに処理して足すのと結果は同じ。非線形なPA質感(コンプ・歪み)だけを音源ごとに並列で回す。
 //
-// 書き出しとプレビューは同じ処理を通る。違いは処理範囲(曲全体か、手前に余分を付けた区間か)と、
-// 段ごとのキャッシュ(Engine)を使うかどうかだけ。
+// 書き出しとプレビューは同じ処理(曲全体)を通る。違いは段ごとのキャッシュ(Engine)を使うかどうかだけ。
 package render
 
 import (
@@ -22,6 +21,7 @@ import (
 	"livebin/internal/audio"
 	"livebin/internal/crowd"
 	"livebin/internal/dsp"
+	"livebin/internal/params"
 	"livebin/internal/project"
 	"livebin/internal/spatial"
 	"livebin/internal/venue"
@@ -52,19 +52,9 @@ type Result struct {
 	LUFS       float64 // 出力の統合ラウドネス
 }
 
-// window は処理範囲。full なら曲全体(残響の尾を含む)。
-// そうでなければ、曲の start サンプル目から n サンプルを出力し、その手前の pre サンプルを
-// 残響の立ち上がりのために余分に処理して捨てる。
-type window struct {
-	full  bool
-	start int
-	pre   int
-	n     int
-}
-
 // Render はプロジェクト全体をレンダリングする(キャッシュなし)。
 func Render(ctx context.Context, p project.Project, prog Progress) (*Result, error) {
-	return (&Engine{}).run(ctx, p, window{full: true}, prog)
+	return (&Engine{}).run(ctx, p, prog)
 }
 
 // Export はレンダリングして24bit WAVに書き出す。
@@ -107,7 +97,7 @@ func prepare(p project.Project) (*prepared, error) {
 
 // run は処理グラフを実行する。各段は memo を通すので、e.cache があれば
 // 「その段が読むパラメーター + 上流の段のキー」が同じ限り再計算しない。
-func (e *Engine) run(ctx context.Context, p project.Project, w window, prog Progress) (*Result, error) {
+func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Result, error) {
 	pp, err := prepare(p)
 	if err != nil {
 		return nil, err
@@ -115,7 +105,7 @@ func (e *Engine) run(ctx context.Context, p project.Project, w window, prog Prog
 	p = pp.p
 
 	// 1. デコード(並列)
-	srcs, err := e.decodeStage(ctx, p.Sources, w, prog)
+	srcs, err := e.decodeStage(ctx, p.Sources, prog)
 	if err != nil {
 		return nil, err
 	}
@@ -129,10 +119,11 @@ func (e *Engine) run(ctx context.Context, p project.Project, w window, prog Prog
 	bus := sumBus(pa.bufs)
 
 	ir := venue.BuildIR(pp.pr, p.Reverb, sampleRate)
-	total := w.pre + w.n
-	if w.full {
-		total = len(bus[0]) + len(ir[0])
-	}
+	// 各段の出力の長さは、残響パラメーターを範囲の上限まで振っても収まる値に固定する
+	// (IRの長さがキーに入ると、残響を動かしたとき直接音・客席まで再計算になるため)。
+	// 実際の長さ(曲 + 現在のIRの尾)へは、ミックスの前に切り詰める
+	total := len(bus[0]) + maxTailSamples(pp.pr)
+	outLen := len(bus[0]) + len(ir[0])
 
 	// 3つの系統は互いに独立なので並列に回す
 	var direct, reverb, crowdSig [][]float32
@@ -151,7 +142,7 @@ func (e *Engine) run(ctx context.Context, p project.Project, w window, prog Prog
 	}()
 	go func() {
 		defer wg.Done()
-		crowdSig, cerr = e.crowdStage(ctx, pp, w, total)
+		crowdSig, cerr = e.crowdStage(ctx, pp, total)
 		steps.done()
 	}()
 	wg.Wait()
@@ -162,23 +153,26 @@ func (e *Engine) run(ctx context.Context, p project.Project, w window, prog Prog
 		return nil, err
 	}
 
-	// 区間の手前の余分は、残響の立ち上がりを作るためだけに処理したので、ここで捨てる。
-	// ラウドネスはこの区間だけで測る(曲全体との差は既知の制約)
-	if !w.full {
-		direct, reverb, crowdSig = crop(direct, w.pre, w.n), crop(reverb, w.pre, w.n), crop(crowdSig, w.pre, w.n)
-	}
-	out := mix(p, direct, reverb, crowdSig)
+	out := mix(p, crop(direct, outLen), crop(reverb, outLen), crop(crowdSig, outLen))
 	master(out, sampleRate, p.Output)
 	steps.done()
 	return &Result{Audio: out, SampleRate: sampleRate, LUFS: dsp.IntegratedLUFS(out, sampleRate)}, nil
 }
 
-func crop(buf [][]float32, pre, n int) [][]float32 {
+func crop(buf [][]float32, n int) [][]float32 {
 	out := make([][]float32, len(buf))
 	for c, ch := range buf {
-		out[c] = ch[pre : pre+n]
+		out[c] = ch[:min(n, len(ch))]
 	}
 	return out
+}
+
+// maxTailSamples は、残響パラメーターを範囲の上限まで振っても会場IRが収まる長さ。
+func maxTailSamples(pr venue.Preset) int {
+	pre, _ := params.Find("reverb.preDelayMs")
+	decay, _ := params.Find("reverb.decayScale")
+	sec := venue.IRSeconds(pr, project.Reverb{PreDelayMs: pre.Max, DecayScale: decay.Max})
+	return int(math.Ceil(sec * sampleRate))
 }
 
 // stageOut は段の出力とそのキャッシュキー。bufs は読み取り専用(キャッシュと共有される)。
@@ -187,8 +181,8 @@ type stageOut struct {
 	bufs [][]float32
 }
 
-// decodeStage は全音源を並列にデコードする。キャッシュキーはファイルの同一性と処理範囲。
-func (e *Engine) decodeStage(ctx context.Context, sources []project.Source, w window, prog Progress) ([]stageOut, error) {
+// decodeStage は全音源を並列にデコードする。キャッシュキーはファイルの同一性。
+func (e *Engine) decodeStage(ctx context.Context, sources []project.Source, prog Progress) ([]stageOut, error) {
 	out := make([]stageOut, len(sources))
 	errs := make([]error, len(sources))
 	ratios := make([]float64, len(sources))
@@ -198,10 +192,10 @@ func (e *Engine) decodeStage(ctx context.Context, sources []project.Source, w wi
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// 読むもの: ファイル(パス・サイズ・更新時刻)と処理範囲だけ。ゲインはPA段が読む
-			key := hashKey(fileIdentity(s.Path), w)
+			// 読むもの: ファイル(パス・サイズ・更新時刻)だけ。ゲインはPA段が読む
+			key := hashKey(fileIdentity(s.Path))
 			bufs, err := memo(e.cache, fmt.Sprintf("decode:%d", i), key, func() ([][]float32, error) {
-				return decodeSource(ctx, s.Path, w, func(r float64) {
+				return audio.Decode(ctx, s.Path, sampleRate, func(r float64) {
 					mu.Lock()
 					ratios[i] = r
 					sum := 0.0
@@ -224,34 +218,6 @@ func (e *Engine) decodeStage(ctx context.Context, sources []project.Source, w wi
 		return nil, err
 	}
 	prog.report(StageDecode, 1)
-	return out, nil
-}
-
-// decodeSource は音源を window の範囲でデコードする。
-// 区間のときは [start-pre, start+n) を取り出し、曲頭より前・ファイル終端より後ろは無音で埋めて長さ pre+n にそろえる。
-func decodeSource(ctx context.Context, path string, w window, progress func(float64)) ([][]float32, error) {
-	if w.full {
-		return audio.Decode(ctx, path, sampleRate, progress)
-	}
-	total := w.pre + w.n
-	from := w.start - w.pre
-	lead := 0
-	if from < 0 {
-		lead, from = -from, 0
-	}
-	out := [][]float32{make([]float32, total), make([]float32, total)}
-	want := total - lead
-	if want <= 0 {
-		return out, nil
-	}
-	seg, err := audio.DecodeRange(ctx, path, sampleRate, float64(from)/sampleRate, float64(want)/sampleRate)
-	if err != nil {
-		return nil, err
-	}
-	for c := range out {
-		copy(out[c][lead:], seg[c])
-	}
-	progress(1)
 	return out, nil
 }
 
@@ -408,19 +374,15 @@ func (e *Engine) reverbStage(ctx context.Context, pp *prepared, bus, ir [][]floa
 	})
 }
 
-// crowdStage は客席系統。処理範囲の先頭が曲の何サンプル目かを渡して、絶対時刻で生成する。
-// 読むもの: crowd.density / spreadM / seed / keyframes / clapRanges、リスナー、spatial.hrirSet、範囲。
+// crowdStage は客席系統。曲頭からの絶対時刻で生成する。
+// 読むもの: crowd.density / spreadM / seed / keyframes / clapRanges、リスナー、spatial.hrirSet、長さ。
 // (crowd.levelDb はミックス段)
-func (e *Engine) crowdStage(ctx context.Context, pp *prepared, w window, total int) ([][]float32, error) {
+func (e *Engine) crowdStage(ctx context.Context, pp *prepared, total int) ([][]float32, error) {
 	p := pp.p
-	start := w.start - w.pre
-	if w.full {
-		start = 0
-	}
 	c := p.Crowd
-	key := hashKey(total, start, c.Density, c.SpreadM, c.Seed, c.Keyframes, c.ClapRanges, p.Listener, p.Spatial.HrirSet)
+	key := hashKey(total, c.Density, c.SpreadM, c.Seed, c.Keyframes, c.ClapRanges, p.Listener, p.Spatial.HrirSet)
 	return memo(e.cache, "crowd", key, func() ([][]float32, error) {
-		return crowd.Render(ctx, c, p.Listener, pp.set, sampleRate, start, total)
+		return crowd.Render(ctx, c, p.Listener, pp.set, sampleRate, 0, total)
 	})
 }
 
