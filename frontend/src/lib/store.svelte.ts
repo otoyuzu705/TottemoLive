@@ -5,7 +5,6 @@ import type { main, params, project, venue } from '../../wailsjs/go/models'
 import { player } from './player.svelte'
 
 const PREVIEW_DEBOUNCE_MS = 200
-export const MAX_PREVIEW_SEC = 120
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
@@ -19,7 +18,6 @@ class AppState {
   presets = $state<project.SoundPresetInfo[]>([])
   infos = $state<Record<string, main.SourceInfo>>({})
   peaks = $state<Record<string, number[]>>({})
-  region = $state({ start: 0, len: 20 })
   projectPath = $state('')
   /** Demucsが使えるか(任意機能) */
   stemAvailable = $state(false)
@@ -33,7 +31,6 @@ class AppState {
   private origTimer = 0
   private seq = 0
   private origSeq = 0
-  private lastRegionKey = ''
   private toastTimer = 0
 
   async init() {
@@ -261,7 +258,7 @@ class AppState {
     this.timer = window.setTimeout(() => void this.renderPreview(), PREVIEW_DEBOUNCE_MS)
   }
 
-  /** 原音(A/B用)の作り直しを予約する。素材・ゲイン・区間が変わったときだけ呼ぶ。 */
+  /** 原音(A/B用)の作り直しを予約する。素材・ゲインが変わったときだけ呼ぶ。 */
   scheduleOriginal() {
     clearTimeout(this.origTimer)
     this.origTimer = window.setTimeout(() => void this.renderOriginal(), PREVIEW_DEBOUNCE_MS)
@@ -270,18 +267,14 @@ class AppState {
   private async renderPreview() {
     const p = untrack(() => this.proj)
     if (!p || p.sources.length === 0) return
-    const { start, len } = untrack(() => $state.snapshot(this.region))
-    const regionKey = `${start}|${len}`
-    const keep = regionKey === this.lastRegionKey
     const mine = ++this.seq
     this.busy++
     try {
-      const url = await Go.RenderPreview($state.snapshot(p) as project.Project, start, len)
+      const url = await Go.RenderPreview($state.snapshot(p) as project.Project)
       // 空文字は、新しい要求に追い越されて中断された印。古い結果は捨てる
       if (!url || mine !== this.seq) return
-      this.lastRegionKey = regionKey
-      if (!keep) player.rewind()
-      await player.load('processed', url, keep)
+      // 再生位置は保ったまま差し替える
+      await player.load('processed', url, true)
     } catch (e) {
       if (mine === this.seq) this.fail(e)
     } finally {
@@ -292,10 +285,9 @@ class AppState {
   private async renderOriginal() {
     const p = untrack(() => this.proj)
     if (!p || p.sources.length === 0) return
-    const { start, len } = untrack(() => $state.snapshot(this.region))
     const mine = ++this.origSeq
     try {
-      const url = await Go.RenderOriginal($state.snapshot(p) as project.Project, start, len)
+      const url = await Go.RenderOriginal($state.snapshot(p) as project.Project)
       if (!url || mine !== this.origSeq) return
       await player.load('original', url, true)
     } catch (e) {

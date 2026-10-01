@@ -203,7 +203,7 @@
   }
 
   const pct = (t: number) => (t / axis) * 100
-  const playhead = $derived(app.region.start + player.position)
+  const playhead = $derived(player.position)
 </script>
 
 <div class="timeline">
@@ -270,7 +270,6 @@
       {/each}
 
       {#if enabled}
-        <rect x={xOf(app.region.start)} y="0" width={xOf(Math.min(app.region.len, axis))} height={H} class="region" />
         <line x1={xOf(playhead)} x2={xOf(playhead)} y1="0" y2={H} class="playhead" />
       {/if}
     </svg>
@@ -303,7 +302,6 @@
   .clap .edge { fill: transparent; cursor: ew-resize; pointer-events: none; }
   .clap.editable rect:not(.edge) { cursor: grab; }
   .clap.editable .edge { pointer-events: all; }
-  .region { fill: #5b9dff14; stroke: var(--accent); stroke-width: 1; pointer-events: none; }
   .playhead { stroke: var(--warn); stroke-width: 2; pointer-events: none; }
   .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); pointer-events: none; }
 </style>

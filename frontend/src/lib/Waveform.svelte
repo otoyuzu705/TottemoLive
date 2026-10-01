@@ -1,10 +1,9 @@
 <script lang="ts">
-  import { app, MAX_PREVIEW_SEC } from './store.svelte'
+  import { app } from './store.svelte'
   import { player } from './player.svelte'
   import { clamp, mmss } from './format'
 
-  // 波形(min/maxピーク列をcanvasに描く)と、プレビュー区間の指定。
-  // ドラッグで区間を選び、クリックで開始位置だけを動かす。
+  // 波形(min/maxピーク列をcanvasに描く)と、再生位置の表示・移動。
   let wrap: HTMLDivElement
   let canvas: HTMLCanvasElement
   let width = $state(0)
@@ -55,45 +54,37 @@
     return () => ro.disconnect()
   })
 
-  const pct = (sec: number) => (duration > 0 ? (sec / duration) * 100 : 0)
+  const pct = (sec: number) => (duration > 0 ? clamp((sec / duration) * 100, 0, 100) : 0)
 
-  let drag: { x0: number; moved: boolean } | null = null
+  // クリック・ドラッグで再生位置を動かす
+  let scrubbing = false
 
-  function timeAt(e: PointerEvent): number {
+  function seekTo(e: PointerEvent) {
     const r = wrap.getBoundingClientRect()
-    return clamp(((e.clientX - r.left) / r.width) * duration, 0, duration)
+    player.seek(clamp(((e.clientX - r.left) / r.width) * duration, 0, duration))
   }
 
   function down(e: PointerEvent) {
-    if (duration <= 0) return
+    if (duration <= 0 || !player.loaded.processed) return
     wrap.setPointerCapture(e.pointerId)
-    drag = { x0: e.clientX, moved: false }
-    app.region.start = Math.min(timeAt(e), Math.max(0, duration - 1))
+    scrubbing = true
+    seekTo(e)
   }
 
   function move(e: PointerEvent) {
-    if (!drag) return
-    if (Math.abs(e.clientX - drag.x0) > 4) drag.moved = true
-    if (!drag.moved) return
-    const r = wrap.getBoundingClientRect()
-    const t0 = clamp(((drag.x0 - r.left) / r.width) * duration, 0, duration)
-    const t1 = timeAt(e)
-    app.region.start = Math.min(t0, t1)
-    app.region.len = clamp(Math.abs(t1 - t0), 1, MAX_PREVIEW_SEC)
+    if (scrubbing) seekTo(e)
   }
 
   function up() {
-    drag = null
+    scrubbing = false
   }
-
-  const playhead = $derived(app.region.start + player.position)
 </script>
 
-<div class="wave" bind:this={wrap} onpointerdown={down} onpointermove={move} onpointerup={up} role="slider" aria-label="プレビュー区間" aria-valuenow={app.region.start} tabindex="-1">
+<div class="wave" bind:this={wrap} onpointerdown={down} onpointermove={move} onpointerup={up} role="slider" aria-label="再生位置" aria-valuenow={player.position} aria-valuemin="0" aria-valuemax={duration} tabindex="-1">
   <canvas bind:this={canvas} style={`width:${width}px;height:${HEIGHT}px`}></canvas>
   {#if duration > 0}
-    <div class="region" style={`left:${pct(app.region.start)}%;width:${pct(Math.min(app.region.len, duration - app.region.start))}%`}></div>
-    <div class="playhead" style={`left:${pct(playhead)}%`} class:on={player.loaded.processed || player.loaded.original}></div>
+    <div class="played" style={`width:${pct(player.position)}%`}></div>
+    <div class="playhead" style={`left:${pct(player.position)}%`} class:on={player.loaded.processed || player.loaded.original}></div>
     <div class="time">{mmss(0)}</div>
     <div class="time end">{mmss(duration)}</div>
   {:else}
@@ -104,7 +95,7 @@
 <style>
   .wave { position: relative; height: 96px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; touch-action: none; cursor: crosshair; }
   canvas { display: block; }
-  .region { position: absolute; top: 0; bottom: 0; background: #5b9dff22; border-left: 1px solid var(--accent); border-right: 1px solid var(--accent); pointer-events: none; }
+  .played { position: absolute; top: 0; bottom: 0; left: 0; background: #5b9dff22; pointer-events: none; }
   .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--warn); pointer-events: none; display: none; }
   .playhead.on { display: block; }
   .time { position: absolute; bottom: 2px; left: 4px; font-size: 10px; color: var(--muted); pointer-events: none; }

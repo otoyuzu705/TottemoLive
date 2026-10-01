@@ -16,18 +16,17 @@
     app.init().catch((e) => app.fail(e))
   })
 
-  // Projectか区間が変わったら、200ms待ってプレビューを作り直す(連続した変更は1回にまとまる)
+  // Projectが変わったら、200ms待ってプレビューを作り直す(連続した変更は1回にまとまる)
   $effect(() => {
     if (!app.proj) return
     JSON.stringify(app.proj)
-    void [app.region.start, app.region.len]
     untrack(() => app.schedulePreview())
   })
 
-  // 原音(A/B用)は、素材・ゲイン・区間が変わったときだけ作り直す
+  // 原音(A/B用)は、素材・ゲインが変わったときだけ作り直す
   $effect(() => {
     if (!app.proj) return
-    const key = JSON.stringify(app.proj.sources.map((s) => [s.path, s.gainDb])) + `|${app.region.start}|${app.region.len}`
+    const key = JSON.stringify(app.proj.sources.map((s) => [s.path, s.gainDb]))
     untrack(() => key && app.scheduleOriginal())
   })
 </script>
