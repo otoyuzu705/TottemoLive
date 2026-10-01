@@ -250,3 +250,6 @@ class AppState {
 }
 
 export const app = new AppState()
+
+// 開発時のみ: ブラウザのコンソールや自動テストからストアを触れるようにする(本番ビルドには入らない)
+if (import.meta.env.DEV) (window as unknown as { __app: AppState }).__app = app

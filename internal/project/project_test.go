@@ -2,6 +2,7 @@ package project_test
 
 import (
 	"errors"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -171,5 +172,23 @@ func TestPresetStore(t *testing.T) {
 		if s.Save(bad, mine) == nil || project.ValidatePresetName(bad) == nil {
 			t.Errorf("bad name accepted: %q", bad)
 		}
+	}
+}
+
+func TestNormalizeCrowdTimeline(t *testing.T) {
+	p := project.New()
+	p.Crowd.Keyframes = []project.Keyframe{{T: 5, Cheer: 2}, {T: -3, Cheer: -1}, {T: 1, Cheer: 0.5}, {T: math.NaN(), Cheer: 1}}
+	p.Crowd.ClapRanges = []project.ClapRange{
+		{Start: 20, End: 30}, {Start: 5, End: 3}, {Start: -4, End: 10}, {Start: 8, End: 12}, {Start: 40, End: 40},
+	}
+	p.Normalize()
+	kf := p.Crowd.Keyframes
+	if len(kf) != 3 || kf[0] != (project.Keyframe{T: 0, Cheer: 0}) || kf[1] != (project.Keyframe{T: 1, Cheer: 0.5}) || kf[2] != (project.Keyframe{T: 5, Cheer: 1}) {
+		t.Errorf("keyframes: %+v", kf)
+	}
+	// 逆順・長さ0は捨て、負の開始は0に、重なる区間は結合する
+	want := []project.ClapRange{{Start: 0, End: 12}, {Start: 20, End: 30}}
+	if len(p.Crowd.ClapRanges) != 2 || p.Crowd.ClapRanges[0] != want[0] || p.Crowd.ClapRanges[1] != want[1] {
+		t.Errorf("clap ranges: %+v", p.Crowd.ClapRanges)
 	}
 }

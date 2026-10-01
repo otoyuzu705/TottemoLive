@@ -5,7 +5,9 @@ package project
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
+	"sort"
 
 	"livebin/internal/params"
 )
@@ -139,11 +141,49 @@ func New() Project {
 	return p
 }
 
-// Normalize は全パラメーターを範囲に丸め、出力形式を固定値にそろえる。
+// Normalize は全パラメーターを範囲に丸め、出力形式を固定値にそろえ、
+// 客席タイムラインを整える(キーフレームは時刻順・強さ0〜1、手拍子区間は時刻順で重なりを結合)。
 func (p *Project) Normalize() {
 	_ = params.Clamp(p)
 	p.Output.SampleRate = OutputSampleRate
 	p.Output.BitDepth = OutputBitDepth
+	p.Crowd.Keyframes = normalizeKeyframes(p.Crowd.Keyframes)
+	p.Crowd.ClapRanges = normalizeClapRanges(p.Crowd.ClapRanges)
+}
+
+func normalizeKeyframes(kf []Keyframe) []Keyframe {
+	out := make([]Keyframe, 0, len(kf))
+	for _, k := range kf {
+		if math.IsNaN(k.T) || math.IsNaN(k.Cheer) || math.IsInf(k.T, 0) {
+			continue
+		}
+		out = append(out, Keyframe{T: math.Max(k.T, 0), Cheer: math.Min(math.Max(k.Cheer, 0), 1)})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].T < out[j].T })
+	return out
+}
+
+func normalizeClapRanges(rs []ClapRange) []ClapRange {
+	valid := make([]ClapRange, 0, len(rs))
+	for _, r := range rs {
+		if math.IsNaN(r.Start) || math.IsNaN(r.End) || math.IsInf(r.Start, 0) || math.IsInf(r.End, 0) {
+			continue
+		}
+		r.Start = math.Max(r.Start, 0)
+		if r.End > r.Start {
+			valid = append(valid, r)
+		}
+	}
+	sort.Slice(valid, func(i, j int) bool { return valid[i].Start < valid[j].Start })
+	out := make([]ClapRange, 0, len(valid))
+	for _, r := range valid {
+		if n := len(out); n > 0 && r.Start <= out[n-1].End {
+			out[n-1].End = math.Max(out[n-1].End, r.End)
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // Clone はスライスも含めて複製する。
