@@ -3,7 +3,6 @@ package audio
 import (
 	"context"
 	"encoding/binary"
-	"math"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -23,33 +22,14 @@ func makeTone(t *testing.T, secs int) string {
 	return path
 }
 
-func TestDecodeRange(t *testing.T) {
+func TestDecode(t *testing.T) {
 	path := makeTone(t, 4)
-	ctx := context.Background()
-	all, err := Decode(ctx, path, 48000, nil)
+	all, err := Decode(context.Background(), path, 48000, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := len(all[0]); n < 4*48000-100 || n > 4*48000+100 {
-		t.Errorf("full length %d", n)
-	}
-	seg, err := DecodeRange(ctx, path, 48000, 1, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := len(seg[0]); n < 2*48000-100 || n > 2*48000+100 {
-		t.Errorf("segment length %d", n)
-	}
-	// 区間は全体の該当部分と一致する(正弦波なので位相で確認)
-	for i := 0; i < 1000; i++ {
-		if d := math.Abs(float64(seg[0][i] - all[0][48000+i])); d > 0.02 {
-			t.Fatalf("segment mismatch at %d: %v", i, d)
-		}
-	}
-	// ファイルの終端を超える範囲は短く返る
-	tail, err := DecodeRange(ctx, path, 48000, 3.5, 5)
-	if err != nil || len(tail[0]) > 48000 {
-		t.Errorf("tail len=%d err=%v", len(tail[0]), err)
+	if n := len(all[0]); n < 4*48000-100 || n > 4*48000+100 || len(all[1]) != len(all[0]) {
+		t.Errorf("decoded length %d/%d", len(all[0]), len(all[1]))
 	}
 }
 

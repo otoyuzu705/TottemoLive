@@ -1,13 +1,13 @@
-// プレビュー再生。<audio> に加工後・原音の2本を切り替えて流す。
-// 新しいプレビューが届いたら、再生位置とループ状態を保ったまま音源を差し替える。
+// プレビュー再生。<audio> に加工後・原音(曲全体)の2本を切り替えて流す。
+// 新しいプレビューが届いたら、再生位置を保ったまま音源を差し替える。
 export type Mode = 'processed' | 'original'
 
 class Player {
   mode = $state<Mode>('processed')
   playing = $state(false)
-  /** 区間の先頭からの再生位置(秒) */
+  /** 曲頭からの再生位置(秒) */
   position = $state(0)
-  /** 区間の長さ(秒)。まだ読み込んでいなければ 0 */
+  /** 再生する音源の長さ(秒、残響の尾を含む)。まだ読み込んでいなければ 0 */
   duration = $state(0)
   loaded = $state<Record<Mode, boolean>>({ processed: false, original: false })
 
@@ -16,7 +16,6 @@ class Player {
   private raf = 0
 
   constructor() {
-    this.audio.loop = true
     this.audio.addEventListener('play', () => {
       this.playing = true
       this.tick()
@@ -83,12 +82,6 @@ class Player {
   seek(sec: number) {
     if (this.audio.src) this.audio.currentTime = sec
     this.position = sec
-  }
-
-  /** 区間が変わったので、再生位置を先頭に戻す。 */
-  rewind() {
-    if (this.audio.src) this.audio.currentTime = 0
-    this.position = 0
   }
 }
 

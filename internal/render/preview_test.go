@@ -2,7 +2,6 @@ package render
 
 import (
 	"context"
-	"math"
 	"testing"
 
 	"livebin/internal/project"
@@ -44,13 +43,13 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := NewEngine()
-			if _, err := e.Preview(context.Background(), base, 0.5, 1.5, nil); err != nil {
+			if _, err := e.Preview(context.Background(), base, nil); err != nil {
 				t.Fatal(err)
 			}
 			before := computed(e)
 			q := base.Clone()
 			tc.mod(&q)
-			if _, err := e.Preview(context.Background(), q, 0.5, 1.5, nil); err != nil {
+			if _, err := e.Preview(context.Background(), q, nil); err != nil {
 				t.Fatal(err)
 			}
 			after := computed(e)
@@ -73,9 +72,9 @@ func TestPreviewCacheHitOnRepeat(t *testing.T) {
 	p := testProject(makeSource(t, t.TempDir()))
 	p.Venue.Preset = "livehouse"
 	e := NewEngine()
-	a, _ := e.Preview(context.Background(), p, 0, 1, nil)
+	a, _ := e.Preview(context.Background(), p, nil)
 	before := computed(e)
-	b, _ := e.Preview(context.Background(), p, 0, 1, nil)
+	b, _ := e.Preview(context.Background(), p, nil)
 	for slot, n := range computed(e) {
 		if n != before[slot] {
 			t.Errorf("slot %s recomputed", slot)
@@ -88,76 +87,40 @@ func TestPreviewCacheHitOnRepeat(t *testing.T) {
 	}
 }
 
-// 区間プレビューは、書き出しと同じ処理を区間に限っただけ(音量だけは区間で測るので別)。
-func TestPreviewMatchesFullRender(t *testing.T) {
+// プレビューは書き出しと同じ処理なので、同じ音(音量も同じ)になる。
+func TestPreviewMatchesRender(t *testing.T) {
 	p := testProject(makeSource(t, t.TempDir()))
 	p.Venue.Preset = "livehouse"
-	// マスターを実質素通しにして、波形そのものを比べる
-	p.Output.TargetLufs = -30
-	p.Output.CeilingDbTp = 0
 	full, err := Render(context.Background(), p, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const start, length = 1.2, 1.5
-	prev, err := NewEngine().Preview(context.Background(), p, start, length, nil)
+	prev, err := NewEngine().Preview(context.Background(), p, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := int(start * 48000)
-	n := len(prev.Audio[0])
-	if n != int(length*48000) {
-		t.Fatalf("preview length %d", n)
+	if len(prev.Audio[0]) != len(full.Audio[0]) {
+		t.Fatalf("length %d vs %d", len(prev.Audio[0]), len(full.Audio[0]))
 	}
-	// 最小二乗でゲインを合わせて、残差を見る
-	var xy, xx float64
-	for i := 0; i < n; i++ {
-		xy += float64(prev.Audio[0][i]) * float64(full.Audio[0][s+i])
-		xx += float64(prev.Audio[0][i]) * float64(prev.Audio[0][i])
-	}
-	g := xy / xx
-	var res, sig float64
-	for i := 0; i < n; i++ {
-		d := float64(full.Audio[0][s+i]) - g*float64(prev.Audio[0][i])
-		res += d * d
-		sig += float64(full.Audio[0][s+i]) * float64(full.Audio[0][s+i])
-	}
-	if db := 10 * math.Log10(res/sig); db > -30 {
-		t.Errorf("preview differs from full render: residual %.1f dB (gain %.3f)", db, g)
-	}
-}
-
-func TestPreviewRangeEdges(t *testing.T) {
-	p := testProject(makeSource(t, t.TempDir()))
-	p.Venue.Preset = "livehouse"
-	e := NewEngine()
-	// 曲頭より前から・終端を越える区間でも長さが保たれる
-	for _, c := range [][2]float64{{0, 1}, {2.5, 2}, {10, 1}} {
-		r, err := e.Preview(context.Background(), p, c[0], c[1], nil)
-		if err != nil {
-			t.Fatalf("%v: %v", c, err)
-		}
-		if got := float64(len(r.Audio[0])) / 48000; math.Abs(got-c[1]) > 0.001 {
-			t.Errorf("%v: length %.3f", c, got)
+	for i := range full.Audio[0] {
+		if full.Audio[0][i] != prev.Audio[0][i] || full.Audio[1][i] != prev.Audio[1][i] {
+			t.Fatalf("preview differs from render at %d", i)
 		}
 	}
-	if _, err := e.Preview(context.Background(), p, 0, 0, nil); err == nil {
-		t.Error("zero length accepted")
-	}
-	if _, err := e.Preview(context.Background(), p, 0, MaxPreviewSec+1, nil); err == nil {
-		t.Error("too long accepted")
+	if full.LUFS != prev.LUFS {
+		t.Errorf("LUFS %v vs %v", full.LUFS, prev.LUFS)
 	}
 }
 
 func TestOriginal(t *testing.T) {
 	p := testProject(makeSource(t, t.TempDir()))
 	p.Sources[0].GainDb = -6
-	r, err := NewEngine().Original(context.Background(), p, 0.5, 1)
+	r, err := NewEngine().Original(context.Background(), p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Audio[0]) != 48000 {
-		t.Fatalf("length %d", len(r.Audio[0]))
+	if n := len(r.Audio[0]); n < 3*48000-100 || n > 3*48000+100 {
+		t.Fatalf("length %d", n)
 	}
 	// モノラル素材なので左右は同じ(バイノーラル化されていない)
 	for i := range r.Audio[0] {

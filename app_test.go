@@ -99,7 +99,7 @@ func TestAddAudioFilesAndPeaks(t *testing.T) {
 
 func TestRenderPreviewServesWav(t *testing.T) {
 	a, _, p := newTestApp(t)
-	url, err := a.RenderPreview(p, 0.5, 1)
+	url, err := a.RenderPreview(p)
 	if err != nil || url == "" {
 		t.Fatalf("preview: %q %v", url, err)
 	}
@@ -111,15 +111,12 @@ func TestRenderPreviewServesWav(t *testing.T) {
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(res.Body)
-	if res.StatusCode != 200 || len(body) != 44+48000*4 || string(body[:4]) != "RIFF" {
+	if res.StatusCode != 200 || len(body) < 44+2*2*48000*3 || string(body[:4]) != "RIFF" {
 		t.Errorf("wav: status=%d len=%d", res.StatusCode, len(body))
 	}
-	orig, err := a.RenderOriginal(p, 0.5, 1)
+	orig, err := a.RenderOriginal(p)
 	if err != nil || orig == "" || orig == url {
 		t.Errorf("original: %q %v", orig, err)
-	}
-	if _, err := a.RenderPreview(p, 0, 0); err == nil {
-		t.Error("zero length accepted")
 	}
 }
 
@@ -130,13 +127,13 @@ func TestRenderPreviewSupersedes(t *testing.T) {
 	p, _ = a.ApplyVenue(p, "dome")
 	first := make(chan string, 1)
 	go func() {
-		u, _ := a.RenderPreview(p, 0, 3)
+		u, _ := a.RenderPreview(p)
 		first <- u
 	}()
 	time.Sleep(150 * time.Millisecond)
 	q := p.Clone()
 	q.PA.LowCutHz = 150
-	if u, err := a.RenderPreview(q, 0, 3); err != nil || u == "" {
+	if u, err := a.RenderPreview(q); err != nil || u == "" {
 		t.Fatalf("second: %q %v", u, err)
 	}
 	if u := <-first; u != "" {

@@ -9,19 +9,14 @@ import (
 	"os"
 	"sync"
 
-	"livebin/internal/params"
 	"livebin/internal/project"
-	"livebin/internal/venue"
 )
 
-// 区間プレビューの長さの上限(秒)。
-const MaxPreviewSec = 120.0
-
-// Engine は区間プレビューの各段の出力をメモリに保持する。
+// Engine はプレビューの各段の出力をメモリに保持する。
 // 各段のキャッシュキーは「その段が読むパラメーターの値 + 上流の段のキー」で、
 // キーが変わった段から下流だけを計算し直す。段が読むパラメーターを増やしたらキーにも入れること
 // (漏れると、値を変えても音が変わらないバグになる)。
-// 段(スロット)ごとに最新の1件だけを持つので、メモリは区間の長さに比例した一定量で収まる。
+// 段(スロット)ごとに最新の1件だけを持つので、メモリは曲の長さに比例した一定量で収まる。
 type Engine struct {
 	cache *cache // nil ならキャッシュなし(書き出し)
 }
@@ -29,69 +24,39 @@ type Engine struct {
 // NewEngine はキャッシュ付きのエンジンを返す。
 func NewEngine() *Engine { return &Engine{cache: newCache()} }
 
-// Preview は曲の startSec 秒から lenSec 秒ぶんを、書き出しと同じ処理でレンダリングする。
-// 区間の手前は会場IRの長さぶん余分に処理して捨てる。
-func (e *Engine) Preview(ctx context.Context, p project.Project, startSec, lenSec float64, prog Progress) (*Result, error) {
-	w, err := previewWindow(p, startSec, lenSec)
-	if err != nil {
-		return nil, err
-	}
-	return e.run(ctx, p, w, prog)
+// Preview は曲全体を、書き出しと同じ処理でレンダリングする(段ごとのキャッシュを使う)。
+// 音量も曲全体で測るので、書き出しと同じになる。
+func (e *Engine) Preview(ctx context.Context, p project.Project, prog Progress) (*Result, error) {
+	return e.run(ctx, p, prog)
 }
 
-// Original は同じ区間の原音(音源にゲインを掛けて足しただけ)を返す。A/B比較用。
+// Original は曲全体の原音(音源にゲインを掛けて足しただけ)を返す。A/B比較用。
 // 音量差で判断が偏らないよう、マスター(ラウドネス・リミッタ)だけは通して同じ目標にそろえる。
-func (e *Engine) Original(ctx context.Context, p project.Project, startSec, lenSec float64) (*Result, error) {
-	w, err := previewWindow(p, startSec, lenSec)
-	if err != nil {
-		return nil, err
-	}
+func (e *Engine) Original(ctx context.Context, p project.Project) (*Result, error) {
 	pp, err := prepare(p)
 	if err != nil {
 		return nil, err
 	}
-	srcs, err := e.decodeStage(ctx, pp.p.Sources, w, nil)
+	srcs, err := e.decodeStage(ctx, pp.p.Sources, nil)
 	if err != nil {
 		return nil, err
 	}
+	n := 0
+	for _, s := range srcs {
+		n = max(n, len(s.bufs[0]))
+	}
 	// デコード結果はキャッシュと共有なので、ゲインを掛けながら新しいバッファに足す
-	out := [][]float32{make([]float32, w.n), make([]float32, w.n)}
+	out := [][]float32{make([]float32, n), make([]float32, n)}
 	for i, s := range srcs {
 		g := float32(math.Pow(10, pp.p.Sources[i].GainDb/20))
 		for c := range out {
-			for k := range out[c] {
-				out[c][k] += s.bufs[c][w.pre+k] * g
+			for k, v := range s.bufs[c] {
+				out[c][k] += v * g
 			}
 		}
 	}
 	master(out, sampleRate, pp.p.Output)
 	return &Result{Audio: out, SampleRate: sampleRate}, nil
-}
-
-func previewWindow(p project.Project, startSec, lenSec float64) (window, error) {
-	if lenSec <= 0 || lenSec > MaxPreviewSec {
-		return window{}, fmt.Errorf("render: プレビュー長は 0 より大きく %g 秒以下にしてください", MaxPreviewSec)
-	}
-	if startSec < 0 {
-		startSec = 0
-	}
-	pr, ok := venue.Get(p.Venue.Preset)
-	if !ok {
-		return window{}, fmt.Errorf("render: 不明な会場 %q", p.Venue.Preset)
-	}
-	return window{
-		start: int(math.Round(startSec * sampleRate)),
-		pre:   int(math.Ceil(maxTailSec(pr) * sampleRate)),
-		n:     int(math.Round(lenSec * sampleRate)),
-	}, nil
-}
-
-// maxTailSec は、残響パラメーターを範囲の上限まで振っても会場IRが収まる長さ。
-// 手前の余分をこの長さに固定するので、残響パラメーターを動かしてもデコード・PAのキャッシュが生きる。
-func maxTailSec(pr venue.Preset) float64 {
-	pre, _ := params.Find("reverb.preDelayMs")
-	decay, _ := params.Find("reverb.decayScale")
-	return venue.IRSeconds(pr, project.Reverb{PreDelayMs: pre.Max, DecayScale: decay.Max})
 }
 
 // CacheStat は段(スロット)ごとの計算回数とキャッシュヒット回数。

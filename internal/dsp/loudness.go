@@ -1,6 +1,9 @@
 package dsp
 
-import "math"
+import (
+	"math"
+	"sync"
+)
 
 // kWeighting は ITU-R BS.1770 のKウェイトフィルタ(高域シェルフ + 高域通過)を任意のサンプルレートで作る。
 func kWeighting(fs float64) (*Biquad, *Biquad) {
@@ -39,17 +42,32 @@ func IntegratedLUFS(buf [][]float32, sr int) float64 {
 	n := len(buf[0])
 	seg := sr / 10 // 100ms
 	nSeg := (n + seg - 1) / seg
-	segEnergy := make([]float64, nSeg) // 各100msセグメントの二乗和(全チャンネル合計)
-	for _, ch := range buf {
-		shelf, hp := kWeighting(float64(sr))
-		for s := 0; s < nSeg; s++ {
-			end := min((s+1)*seg, n)
-			sum := 0.0
-			for i := s * seg; i < end; i++ {
-				y := hp.ProcessSample(shelf.ProcessSample(float64(ch[i])))
-				sum += y * y
+	// チャンネルごとに独立なので並列にフィルタして、セグメントごとの二乗和を求める
+	perCh := make([][]float64, len(buf))
+	var wg sync.WaitGroup
+	for c, ch := range buf {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			energy := make([]float64, nSeg)
+			shelf, hp := kWeighting(float64(sr))
+			for s := 0; s < nSeg; s++ {
+				end := min((s+1)*seg, n)
+				sum := 0.0
+				for i := s * seg; i < end; i++ {
+					y := hp.ProcessSample(shelf.ProcessSample(float64(ch[i])))
+					sum += y * y
+				}
+				energy[s] = sum
 			}
-			segEnergy[s] += sum
+			perCh[c] = energy
+		}()
+	}
+	wg.Wait()
+	segEnergy := make([]float64, nSeg) // 各100msセグメントの二乗和(全チャンネル合計)
+	for _, e := range perCh {
+		for s, v := range e {
+			segEnergy[s] += v
 		}
 	}
 	lufs := func(power float64) float64 { return -0.691 + 10*math.Log10(power) }
