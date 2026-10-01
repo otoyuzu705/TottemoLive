@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"os"
 	"os/exec"
 	"strconv"
@@ -68,16 +69,65 @@ func Probe(ctx context.Context, path string) (Info, error) {
 	return Info{DurationSec: dur, SampleRate: sr, Channels: r.Streams[0].Channels}, nil
 }
 
-// Decode は音源を sr Hz のステレオfloat32にデコードする(リサンプル・チャンネル変換はffmpeg任せ)。
+// Decode は音源全体を sr Hz のステレオfloat32にデコードする(リサンプル・チャンネル変換はffmpeg任せ)。
 // progress は 0〜1(長さが分かる場合のみ、概算)。
 func Decode(ctx context.Context, path string, sr int, progress func(ratio float64)) ([][]float32, error) {
+	return decodeRaw(ctx, path, sr, Channels, 0, 0, progress)
+}
+
+// DecodeRange は startSec から durSec 秒ぶん(durSec<=0 なら最後まで)をデコードする。
+// ファイルの範囲外は返らないので、呼び出し側で長さをそろえること。
+func DecodeRange(ctx context.Context, path string, sr int, startSec, durSec float64) ([][]float32, error) {
+	return decodeRaw(ctx, path, sr, Channels, startSec, durSec, nil)
+}
+
+// peakSampleRate は波形表示用のモノラルデコードのサンプルレート。
+const peakSampleRate = 8000
+
+// Peaks は波形表示用のmin/maxピーク列(長さ 2*width、[min0, max0, min1, max1, ...])を返す。
+func Peaks(ctx context.Context, path string, width int) ([]float32, error) {
+	if width <= 0 {
+		return nil, fmt.Errorf("audio: width must be positive")
+	}
+	buf, err := decodeRaw(ctx, path, peakSampleRate, 1, 0, 0, nil)
+	if err != nil {
+		return nil, err
+	}
+	x := buf[0]
+	out := make([]float32, 2*width)
+	for i := 0; i < width; i++ {
+		from, to := len(x)*i/width, len(x)*(i+1)/width
+		if to <= from {
+			to = min(from+1, len(x))
+		}
+		lo, hi := float32(0), float32(0)
+		for _, v := range x[from:to] {
+			lo, hi = min(lo, v), max(hi, v)
+		}
+		out[2*i], out[2*i+1] = lo, hi
+	}
+	return out, nil
+}
+
+func decodeRaw(ctx context.Context, path string, sr, channels int, startSec, durSec float64, progress func(ratio float64)) ([][]float32, error) {
 	var expect float64
 	if info, err := Probe(ctx, path); err == nil {
-		expect = info.DurationSec * float64(sr)
+		d := info.DurationSec - startSec
+		if durSec > 0 {
+			d = math.Min(d, durSec)
+		}
+		expect = d * float64(sr)
 	}
-	cmd := exec.CommandContext(ctx, bin("LIVEBIN_FFMPEG", "ffmpeg"),
-		"-v", "error", "-nostdin", "-i", path, "-vn",
-		"-f", "f32le", "-ac", strconv.Itoa(Channels), "-ar", strconv.Itoa(sr), "pipe:1")
+	args := []string{"-v", "error", "-nostdin"}
+	if startSec > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(startSec, 'f', 6, 64))
+	}
+	if durSec > 0 {
+		args = append(args, "-t", strconv.FormatFloat(durSec, 'f', 6, 64))
+	}
+	args = append(args, "-i", path, "-vn",
+		"-f", "f32le", "-ac", strconv.Itoa(channels), "-ar", strconv.Itoa(sr), "pipe:1")
+	cmd := exec.CommandContext(ctx, bin("LIVEBIN_FFMPEG", "ffmpeg"), args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
@@ -88,8 +138,8 @@ func Decode(ctx context.Context, path string, sr int, progress func(ratio float6
 		return nil, fmt.Errorf("ffmpeg を起動できません: %w", err)
 	}
 
-	const frameBytes = 4 * Channels
-	out := [][]float32{{}, {}}
+	frameBytes := 4 * channels
+	out := make([][]float32, channels)
 	chunk := make([]byte, frameBytes*8192)
 	have := 0
 	for {
@@ -97,7 +147,7 @@ func Decode(ctx context.Context, path string, sr int, progress func(ratio float6
 		have += n
 		frames := have / frameBytes
 		for i := 0; i < frames; i++ {
-			for c := 0; c < Channels; c++ {
+			for c := 0; c < channels; c++ {
 				bits := binary.LittleEndian.Uint32(chunk[i*frameBytes+4*c:])
 				out[c] = append(out[c], math.Float32frombits(bits))
 			}
@@ -116,7 +166,7 @@ func Decode(ctx context.Context, path string, sr int, progress func(ratio float6
 		}
 		return nil, fmt.Errorf("ffmpeg decode %s: %w: %s", path, err, strings.TrimSpace(stderr.String()))
 	}
-	if len(out[0]) == 0 {
+	if len(out[0]) == 0 && startSec <= 0 {
 		return nil, fmt.Errorf("ffmpeg decode %s: 音声データがありません", path)
 	}
 	return out, nil
@@ -169,4 +219,33 @@ func writeInterleaved(w io.Writer, buf [][]float32, progress func(float64)) erro
 		}
 	}
 	return nil
+}
+
+// WAV16 はステレオfloat32を16bit PCMのWAV(メモリ上)にする。プレビューの再生用。
+// 量子化ノイズを散らすためTPDFディザを掛ける(乱数は固定シードで再現可能)。
+func WAV16(buf [][]float32, sr int) []byte {
+	n := len(buf[0])
+	dataLen := n * 2 * Channels
+	b := make([]byte, 0, 44+dataLen)
+	b = append(b, "RIFF"...)
+	b = binary.LittleEndian.AppendUint32(b, uint32(36+dataLen))
+	b = append(b, "WAVEfmt "...)
+	b = binary.LittleEndian.AppendUint32(b, 16)
+	b = binary.LittleEndian.AppendUint16(b, 1) // PCM
+	b = binary.LittleEndian.AppendUint16(b, Channels)
+	b = binary.LittleEndian.AppendUint32(b, uint32(sr))
+	b = binary.LittleEndian.AppendUint32(b, uint32(sr*2*Channels))
+	b = binary.LittleEndian.AppendUint16(b, 2*Channels)
+	b = binary.LittleEndian.AppendUint16(b, 16)
+	b = append(b, "data"...)
+	b = binary.LittleEndian.AppendUint32(b, uint32(dataLen))
+	rng := rand.New(rand.NewSource(1))
+	for i := 0; i < n; i++ {
+		for c := 0; c < Channels; c++ {
+			v := float64(buf[c][i])*32767 + (rng.Float64() - rng.Float64())
+			v = math.Max(-32768, math.Min(32767, math.Round(v)))
+			b = binary.LittleEndian.AppendUint16(b, uint16(int16(v)))
+		}
+	}
+	return b
 }

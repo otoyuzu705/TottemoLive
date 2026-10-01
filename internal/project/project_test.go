@@ -1,8 +1,11 @@
 package project_test
 
 import (
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
+	"testing/fstest"
 
 	"livebin/internal/params"
 	"livebin/internal/project"
@@ -99,5 +102,74 @@ func TestSaveLoadRoundTripAndMissingFields(t *testing.T) {
 	}
 	if _, err := project.Parse([]byte(`{"version":99}`)); err == nil {
 		t.Error("future version accepted")
+	}
+}
+
+func TestSoundPresetRoundTrip(t *testing.T) {
+	p := project.New()
+	p.Sources = []project.Source{{ID: "a", Path: "/a.wav"}}
+	p.Listener.X = 7
+	p.Crowd.Keyframes = []project.Keyframe{{T: 1, Cheer: 1}}
+	p.PA.LowCutHz = 100
+	p.Crowd.Seed = 5
+	sp := project.ExtractSoundPreset(p)
+
+	// 別のプロジェクトに適用しても、素材・座席・タイムラインは変わらない
+	q := project.New()
+	q.Sources = []project.Source{{ID: "b", Path: "/b.wav"}}
+	q.Listener.X = -3
+	r := q.ApplySoundPreset(sp)
+	if r.PA.LowCutHz != 100 || r.Crowd.Seed != 5 {
+		t.Errorf("preset not applied: %+v", r.PA)
+	}
+	if r.Sources[0].ID != "b" || r.Listener.X != -3 || len(r.Crowd.Keyframes) != 0 {
+		t.Error("preset must not touch sources/listener/timeline")
+	}
+}
+
+func TestPresetStore(t *testing.T) {
+	shipped := fstest.MapFS{"標準.json": {Data: []byte(`{"pa":{"lowCutHz":1}}`)}}
+	s := &project.PresetStore{UserDir: filepath.Join(t.TempDir(), "presets"), Shipped: shipped}
+
+	list, err := s.List() // ユーザーディレクトリがなくても出荷時は出る
+	if err != nil || len(list) != 1 || !list[0].ReadOnly {
+		t.Fatalf("list: %v %v", list, err)
+	}
+	// 出荷時は範囲に丸めて読める
+	sp, err := s.Load("標準")
+	if err != nil || sp.PA.LowCutHz != 20 || sp.PA.CompRatio != 3 {
+		t.Fatalf("load shipped: %+v %v", sp.PA, err)
+	}
+
+	mine := project.ExtractSoundPreset(project.New())
+	mine.PA.Drive = 0.9
+	if err := s.Save("自作", mine); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Load("自作")
+	if err != nil || got.PA.Drive != 0.9 {
+		t.Fatalf("load user: %+v %v", got.PA, err)
+	}
+	list, _ = s.List()
+	if len(list) != 2 || !list[0].ReadOnly || list[1].Name != "自作" || list[1].ReadOnly {
+		t.Errorf("list order: %v", list)
+	}
+
+	if !errors.Is(s.Save("標準", mine), project.ErrPresetReadOnly) {
+		t.Error("overwriting a shipped preset should fail")
+	}
+	if !errors.Is(s.Delete("標準"), project.ErrPresetReadOnly) {
+		t.Error("deleting a shipped preset should fail")
+	}
+	if err := s.Delete("自作"); err != nil {
+		t.Fatal(err)
+	}
+	if s.Delete("自作") == nil {
+		t.Error("deleting a missing preset should fail")
+	}
+	for _, bad := range []string{"", " ", "../x", "a/b", ".hidden", "x:y", strings.Repeat("あ", 65), " pad"} {
+		if s.Save(bad, mine) == nil || project.ValidatePresetName(bad) == nil {
+			t.Errorf("bad name accepted: %q", bad)
+		}
 	}
 }
