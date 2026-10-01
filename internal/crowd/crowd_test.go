@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"livebin/internal/project"
-	"livebin/internal/spatial"
+	"tottemolive/internal/project"
+	"tottemolive/internal/spatial"
 )
 
 const sr = 48000

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"livebin/internal/project"
+	"tottemolive/internal/project"
 )
 
 func computed(e *Engine) map[string]int {

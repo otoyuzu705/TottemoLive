@@ -11,8 +11,8 @@ import (
 	"math"
 	"math/rand"
 
-	"livebin/internal/dsp"
-	"livebin/internal/project"
+	"tottemolive/internal/dsp"
+	"tottemolive/internal/project"
 )
 
 // Preset は会場1つぶんの定義。

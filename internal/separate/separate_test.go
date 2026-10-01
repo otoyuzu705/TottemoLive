@@ -10,14 +10,14 @@ import (
 	"time"
 )
 
-// 偽のDemucsをビルドして LIVEBIN_DEMUCS に設定する。
+// 偽のDemucsをビルドして TOTTEMOLIVE_DEMUCS に設定する。
 func useStub(t *testing.T) {
 	t.Helper()
 	exe := filepath.Join(t.TempDir(), "demucs.exe")
 	if out, err := exec.Command("go", "build", "-o", exe, "./testdata/stubdemucs").CombinedOutput(); err != nil {
 		t.Fatalf("build stub: %v\n%s", err, out)
 	}
-	t.Setenv("LIVEBIN_DEMUCS", exe)
+	t.Setenv("TOTTEMOLIVE_DEMUCS", exe)
 }
 
 func writeSong(t *testing.T) string {
@@ -89,7 +89,7 @@ func TestSeparateCancel(t *testing.T) {
 }
 
 func TestUnavailable(t *testing.T) {
-	t.Setenv("LIVEBIN_DEMUCS", filepath.Join(t.TempDir(), "no-such-demucs"))
+	t.Setenv("TOTTEMOLIVE_DEMUCS", filepath.Join(t.TempDir(), "no-such-demucs"))
 	if Available() {
 		t.Error("should be unavailable")
 	}

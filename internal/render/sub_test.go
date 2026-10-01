@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"livebin/internal/audio"
-	"livebin/internal/project"
+	"tottemolive/internal/audio"
+	"tottemolive/internal/project"
 )
 
 // 60 Hz(サブの帯域)と 1 kHz(メインの帯域)の正弦波を重ねた4秒の音源を作る。

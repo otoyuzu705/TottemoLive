@@ -153,7 +153,7 @@ type ParamSpec struct {
 
 - 会場プリセット: 会場IR、部屋の寸法、スピーカーの既定位置、残響パラメーターの既定値を持つ。会場を切り替えると`venue.speakers`・`venue.subs`と`reverb.*`をプリセットの値で上書きし、リスナー位置を部屋の範囲内に収める
 - 音作りプリセット: `pa` `sub` `spatial` `reverb` `output`の全パラメーターと、`crowd`のうち表にある4つを名前を付けて保存したもの。素材・座席・タイムラインは含めないので、別の曲にそのまま適用できる
-- 音作りプリセットの保存先は`os.UserConfigDir()`以下の`livebin/presets/*.json`。出荷時のプリセットは`assets/presets/`に同梱し、読み取り専用として一覧の先頭に混ぜる。出荷時と同名のユーザープリセットは作れない。読み込み時は欠けた項目を既定値で補い、範囲に丸める
+- 音作りプリセットの保存先は`os.UserConfigDir()`以下の`TottemoLive/presets/*.json`。出荷時のプリセットは`assets/presets/`に同梱し、読み取り専用として一覧の先頭に混ぜる。出荷時と同名のユーザープリセットは作れない。読み込み時は欠けた項目を既定値で補い、範囲に丸める
 
 ### 聴きながら調整するためのプレビュー
 
@@ -171,10 +171,10 @@ type ParamSpec struct {
 DSPは`internal/`以下に役割ごとに分け、Wailsに依存するのは`main.go`と`app.go`だけにする。こうしておけば同じエンジンをCLIからも呼べる。
 
 ```
-livebin/
+TottemoLive/
 ├── main.go          // Wails起動、AssetServerハンドラ登録
 ├── app.go           // フロントに公開するApp構造体
-├── cmd/livebin-cli/ // CLI(Wailsなし)。動作確認・テスト・一括変換用
+├── cmd/tottemolive-cli/ // CLI(Wailsなし)。動作確認・テスト・一括変換用
 ├── internal/
 │   ├── audio/       // デコード・エンコード(ffmpeg子プロセス)、リサンプル
 │   ├── dsp/         // 分割FFT畳み込み、Biquad、コンプ、リミッタ
@@ -198,7 +198,7 @@ livebin/
 - 音源ごとの処理はgoroutineで並列に回す。ただしPAより後ろの段(距離・遅延・フィルタ・畳み込み)は線形なので、非線形なPA質感(コンプ・歪み)まで音源ごとに処理して合流し、以降は合流後のバスを処理する(音源ごとに処理して足すのと結果は同じで、会場IRの畳み込みが音源数倍にならない)。直接音(スピーカーごと)・残響(左右)・客席はそれぞれ並列
 - ジョブは`context.Context`でキャンセル可能にする
 - DSPの各段は音に関わる数値をProjectのパラメーターから受け取る。コード内に定数として埋めない
-- CLIも同じパラメーター定義を使う。`livebin-cli render project.json -o out.wav --set pa.lowCutHz=80`のようにPathで上書きでき、`livebin-cli params`で一覧を出す
+- CLIも同じパラメーター定義を使う。`tottemolive-cli render project.json -o out.wav --set pa.lowCutHz=80`のようにPathで上書きでき、`tottemolive-cli params`で一覧を出す
 
 ## Wails連携(バインディング・イベント・プレビュー)
 
@@ -225,7 +225,7 @@ livebin/
 | `StartExport(p Project, outPath string) (string, error)` | 書き出しジョブを開始し、ジョブIDを返す |
 | `CancelJob(jobID string)` | ジョブの中断(書き出し・ステム分離) |
 | `StemSeparationAvailable() bool` | Demucsが使えるか。使えないときフロントは分離ボタンを隠す |
-| `SeparateSource(sourceID string) (string, error)` | 音源をボーカルと伴奏に分離するジョブを開始し、ジョブIDを返す。同じ音源の結果はキャッシュ(`os.UserCacheDir()/livebin/stems`)される |
+| `SeparateSource(sourceID string) (string, error)` | 音源をボーカルと伴奏に分離するジョブを開始し、ジョブIDを返す。同じ音源の結果はキャッシュ(`os.UserCacheDir()/TottemoLive/stems`)される |
 
 **イベント(`runtime.EventsEmit`)**
 
