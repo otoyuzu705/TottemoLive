@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"math"
 
-	"livebin/internal/dsp"
+	"tottemolive/internal/dsp"
 )
 
 // 距離モデルの形を決める定数。強さそのものは Project の spatial.* で調整する。

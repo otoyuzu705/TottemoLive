@@ -9,7 +9,7 @@ import (
 	"os"
 	"sort"
 
-	"livebin/internal/params"
+	"tottemolive/internal/params"
 )
 
 const (

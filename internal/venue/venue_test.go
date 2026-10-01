@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
-	"livebin/internal/dsp"
-	"livebin/internal/project"
+	"tottemolive/internal/dsp"
+	"tottemolive/internal/project"
 )
 
 func TestDefaultVenueMatchesArenaPreset(t *testing.T) {

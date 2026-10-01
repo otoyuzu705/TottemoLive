@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"livebin/internal/project"
+	"tottemolive/internal/project"
 )
 
 // Engine はプレビューの各段の出力をメモリに保持する。

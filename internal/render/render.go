@@ -18,13 +18,13 @@ import (
 	"math"
 	"sync"
 
-	"livebin/internal/audio"
-	"livebin/internal/crowd"
-	"livebin/internal/dsp"
-	"livebin/internal/params"
-	"livebin/internal/project"
-	"livebin/internal/spatial"
-	"livebin/internal/venue"
+	"tottemolive/internal/audio"
+	"tottemolive/internal/crowd"
+	"tottemolive/internal/dsp"
+	"tottemolive/internal/params"
+	"tottemolive/internal/project"
+	"tottemolive/internal/spatial"
+	"tottemolive/internal/venue"
 )
 
 // 進捗通知の段階名(Wailsの render:progress の stage と一致)。
