@@ -99,7 +99,7 @@ func Render(ctx context.Context, p project.Project, prog Progress) (*Result, err
 	}()
 	go func() {
 		defer wg.Done()
-		crowdSig, cerr = crowd.Render(ctx, p.Crowd, p.Listener, set, sr, total)
+		crowdSig, cerr = crowd.Render(ctx, p.Crowd, p.Listener, set, sr, 0, total)
 		steps.done()
 	}()
 	wg.Wait()
