@@ -72,6 +72,27 @@ func TestConvolveMatchesDirect(t *testing.T) {
 }
 
 // 分割サイズをどれにしても結果は同じ(分割サイズはIR長の倍数でなくてもよい)。
+// 左右ペアの畳み込みは、別々に畳み込んだ結果と一致する(IR長が違っても、長い/短いが混ざっても)。
+func TestConvolvePair(t *testing.T) {
+	rng := rand.New(rand.NewSource(4))
+	for _, c := range []struct{ nx, na, nb int }{
+		{10000, 192, 192}, {10000, 100, 400}, {5, 192, 192}, {10000, 192, 3000}, {10000, 2000, 3000},
+	} {
+		x, a, b := randSignal(rng, c.nx), randSignal(rng, c.na), randSignal(rng, c.nb)
+		ya, yb, err := ConvolvePair(context.Background(), x, a, b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkConv(t, "pair A", ya, x, a, 53)
+		checkConv(t, "pair B", yb, x, b, 53)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := ConvolvePair(ctx, make([]float32, 200000), make([]float32, 100), make([]float32, 100)); err == nil {
+		t.Error("expected cancellation error")
+	}
+}
+
 func TestConvolvePartitionedAnyBlock(t *testing.T) {
 	rng := rand.New(rand.NewSource(2))
 	x, h := randSignal(rng, 40000), randSignal(rng, 9000)

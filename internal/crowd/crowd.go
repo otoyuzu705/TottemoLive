@@ -136,14 +136,11 @@ func renderVoice(ctx context.Context, c project.Crowd, l project.Listener, set s
 	}
 
 	h := set.Lookup(az, el)
-	res := make([][]float32, 2)
-	for ch, ir := range [][]float32{h.L, h.R} {
-		y, err := dsp.Convolve(ctx, sig, ir)
-		if err != nil {
-			return nil, err
-		}
-		res[ch] = y[:n]
+	earL, earR, err := dsp.ConvolvePair(ctx, sig, h.L, h.R)
+	if err != nil {
+		return nil, err
 	}
+	res := [][]float32{earL[:n], earR[:n]}
 	return res, nil
 }
 
