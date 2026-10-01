@@ -124,39 +124,72 @@ const (
 )
 
 // IRSeconds は BuildIR が作る会場IRの長さ(秒、プリディレイを含む)。
+// 低域の残響が中高域より長いとき(lowDecayScale > 1)は、そちらに合わせる。
 func IRSeconds(pr Preset, r project.Reverb) float64 {
-	return pr.RT60Sec*r.DecayScale*irTailMargin + r.PreDelayMs*1e-3
+	return pr.RT60Sec*r.DecayScale*math.Max(1, r.LowDecayScale)*irTailMargin + r.PreDelayMs*1e-3
 }
 
 // BuildIR は会場IR(左右)を作る。r.DecayScale で残響の長さ、r.HighDampHz で高域ダンプ、
-// r.PreDelayMs でプリディレイを決める。左右合計のエネルギーを1にそろえるので、
-// 残響の長さを変えても音量は変わらない。
+// r.PreDelayMs でプリディレイを決める。
+//
+// 低域(r.LowCrossoverHz 以下)は中高域と別に作る:
+//   - 左右の相関 r.LowCoherence: 自然な拡散音場は、耳の間隔が波長より小さい低域では左右の残響が
+//     ほぼ同じ信号になる(500 Hz 以下で相関が高い)。独立なノイズだけだと低域まで左右バラバラになり、
+//     低音の余韻が軽く広がって重さが出ない。右耳の低域を「左と同じ成分 + 独立な成分」で作り、
+//     相関を LowCoherence にする(1 で左右同じ)
+//   - 残響の長さ r.LowDecayScale: 実際の会場は低域ほど長く残る
+//   - レベル r.LowLevelDb
+//
+// 左右合計のエネルギーを1にそろえるので、残響の長さを変えても音量は変わらない。
 func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
-	rt60 := pr.RT60Sec * r.DecayScale
-	n := int(rt60 * irTailMargin * float64(sr))
+	rtMain := pr.RT60Sec * r.DecayScale
+	rtLow := rtMain * r.LowDecayScale
+	n := int(math.Max(rtMain, rtLow) * irTailMargin * float64(sr))
 	pre := int(r.PreDelayMs * 1e-3 * float64(sr))
 	fade := max(int(irFadeInMs*1e-3*float64(sr)), 1)
+	fs := float64(sr)
 
 	h := fnv.New64a()
 	h.Write([]byte(pr.ID))
+	// 左右それぞれの独立な白色ノイズを、低域と中高域に分ける(LR4で分けると、足し合わせた振幅はフラットのまま)
+	var low, high [2][]float32
+	for c := 0; c < 2; c++ {
+		rng := rand.New(rand.NewSource(int64(h.Sum64()) + int64(c)*7919))
+		noise := make([]float32, n)
+		for i := range noise {
+			noise[i] = float32(rng.Float64()*2 - 1)
+		}
+		low[c] = append([]float32(nil), noise...)
+		dsp.LR4LowPass(low[c], fs, r.LowCrossoverHz)
+		dsp.LR4HighPass(noise, fs, r.LowCrossoverHz)
+		high[c] = noise
+	}
+	// 右の低域 = c × 左の低域 + √(1-c²) × 右の独立な低域(どちらも同じ強さなので、相関は c になる)
+	c := math.Min(math.Max(r.LowCoherence, 0), 1)
+	for i := range low[1] {
+		low[1][i] = float32(c*float64(low[0][i]) + math.Sqrt(1-c*c)*float64(low[1][i]))
+	}
+
+	gLow := dsp.DbToLin(r.LowLevelDb)
 	out := make([][]float32, 2)
 	total := 0.0
-	for c := range out {
-		rng := rand.New(rand.NewSource(int64(h.Sum64()) + int64(c)*7919))
+	for ch := range out {
 		ir := make([]float32, pre+n)
 		for i := 0; i < n; i++ {
-			t := float64(i) / float64(sr)
-			env := math.Exp(-ln1000 * t / rt60)
+			t := float64(i) / fs
+			envMain := math.Exp(-ln1000 * t / rtMain)
+			envLow := math.Exp(-ln1000 * t / rtLow)
 			if i < fade {
-				env *= float64(i) / float64(fade)
+				f := float64(i) / float64(fade)
+				envMain, envLow = envMain*f, envLow*f
 			}
-			ir[pre+i] = float32((rng.Float64()*2 - 1) * env)
+			ir[pre+i] = float32(float64(high[ch][i])*envMain + gLow*float64(low[ch][i])*envLow)
 		}
-		dsp.LowPass(float64(sr), r.HighDampHz).Process(ir)
+		dsp.LowPass(fs, r.HighDampHz).Process(ir)
 		for _, v := range ir {
 			total += float64(v) * float64(v)
 		}
-		out[c] = ir
+		out[ch] = ir
 	}
 	if total > 0 {
 		g := float32(1 / math.Sqrt(total/2))
