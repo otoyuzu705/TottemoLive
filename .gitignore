@@ -1,7 +1,8 @@
 # ビルド成果物
-/build/
+/build/bin/
 /frontend/node_modules/
-/frontend/dist/
+/frontend/dist/*
+!/frontend/dist/.gitkeep
 *.exe
 # 生成された音声
 *.wav
