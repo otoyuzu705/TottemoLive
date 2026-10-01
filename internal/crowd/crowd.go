@@ -21,6 +21,7 @@ import (
 // キーフレーム・手拍子区間。
 const (
 	maxVoices       = 12  // density=1 のときの人数(散布する音源の数)
+	voiceBatch      = 4   // 同時に処理する人数(メモリの上限を決める)
 	minRadiusM      = 1.5 // リスナーに近すぎる配置を避ける
 	cheerLowHz      = 300.0
 	cheerHighHz     = 3000.0
@@ -49,30 +50,32 @@ func Render(ctx context.Context, c project.Crowd, l project.Listener, set spatia
 		return out, nil
 	}
 
-	results := make([][][]float32, voices)
-	errs := make([]error, voices)
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 4) // 同時に処理する人数(メモリの上限)
-	for v := 0; v < voices; v++ {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func() {
-			defer wg.Done()
-			defer func() { <-sem }()
-			results[v], errs[v] = renderVoice(ctx, c, l, set, sr, start, n, v, cheerEnv)
-		}()
-	}
-	wg.Wait()
-	for _, err := range errs {
-		if err != nil {
-			return nil, err
-		}
-	}
+	// 一度に voiceBatch 人ずつ並列に処理し、人の順に足し込む。全員ぶんの結果を同時に持たない
+	// (1人ぶんは曲の長さ×2ch)ので、メモリは人数に依らない。足し算の順序も固定で、結果は再現できる
 	norm := float32(1 / math.Sqrt(maxVoices))
-	for _, r := range results {
-		for ch := range out {
-			for i := 0; i < n; i++ {
-				out[ch][i] += r[ch][i] * norm
+	for v0 := 0; v0 < voices; v0 += voiceBatch {
+		n1 := min(v0+voiceBatch, voices)
+		results := make([][][]float32, n1-v0)
+		errs := make([]error, n1-v0)
+		var wg sync.WaitGroup
+		for v := v0; v < n1; v++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				results[v-v0], errs[v-v0] = renderVoice(ctx, c, l, set, sr, start, n, v, cheerEnv)
+			}()
+		}
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil {
+				return nil, err
+			}
+		}
+		for _, r := range results {
+			for ch := range out {
+				for i := 0; i < n; i++ {
+					out[ch][i] += r[ch][i] * norm
+				}
 			}
 		}
 	}
