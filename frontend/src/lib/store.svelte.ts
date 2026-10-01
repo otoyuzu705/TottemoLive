@@ -1,6 +1,6 @@
 import { untrack } from 'svelte'
 import * as Go from '../../wailsjs/go/main/App'
-import { OnFileDrop } from '../../wailsjs/runtime/runtime'
+import { EventsOn, OnFileDrop } from '../../wailsjs/runtime/runtime'
 import type { main, params, project, venue } from '../../wailsjs/go/models'
 import { player } from './player.svelte'
 
@@ -21,6 +21,10 @@ class AppState {
   peaks = $state<Record<string, number[]>>({})
   region = $state({ start: 0, len: 20 })
   projectPath = $state('')
+  /** Demucsが使えるか(任意機能) */
+  stemAvailable = $state(false)
+  /** ステム分離中の音源ID → ジョブIDと進捗 */
+  separating = $state<Record<string, { jobId: string; ratio: number }>>({})
   /** 進行中のプレビュー作成の数 */
   busy = $state(0)
   toast = $state('')
@@ -46,6 +50,57 @@ class AppState {
     OnFileDrop((_x, _y, paths) => {
       void this.addPaths(paths)
     }, false)
+    this.stemAvailable = await Go.StemSeparationAvailable()
+    // separate:* イベントの中身は Go側 app.go の SeparateProgressEvent / SeparateDoneEvent / SeparateErrorEvent
+    EventsOn('separate:progress', (e: { sourceId: string; ratio: number }) => {
+      const cur = this.separating[e.sourceId]
+      if (cur) cur.ratio = e.ratio
+    })
+    EventsOn('separate:done', (e: { sourceId: string; vocals: main.SourceInfo; backing: main.SourceInfo }) =>
+      this.replaceWithStems(e.sourceId, e.vocals, e.backing),
+    )
+    EventsOn('separate:error', (e: { sourceId: string; message: string }) => {
+      delete this.separating[e.sourceId]
+      this.notify(`ステム分離: ${e.message}`)
+    })
+  }
+
+  // --- ステム分離 ---
+
+  async separate(sourceId: string) {
+    try {
+      const jobId = await Go.SeparateSource(sourceId)
+      this.separating[sourceId] = { jobId, ratio: 0 }
+    } catch (e) {
+      this.fail(e)
+    }
+  }
+
+  cancelSeparate(sourceId: string) {
+    const job = this.separating[sourceId]
+    if (job) void Go.CancelJob(job.jobId)
+  }
+
+  /** 分離が終わったら、元の音源を「ボーカル」「伴奏」の2本に置き換える(ゲインは引き継ぐ)。 */
+  private replaceWithStems(sourceId: string, vocals: main.SourceInfo, backing: main.SourceInfo) {
+    delete this.separating[sourceId]
+    if (!this.proj) return
+    const i = this.proj.sources.findIndex((s) => s.id === sourceId)
+    if (i < 0) return
+    const gainDb = this.proj.sources[i].gainDb
+    for (const info of [vocals, backing]) {
+      this.infos[info.id] = info
+      void this.loadPeaks(info.id)
+    }
+    this.proj.sources.splice(
+      i,
+      1,
+      { id: vocals.id, path: vocals.path, role: 'vocal', gainDb },
+      { id: backing.id, path: backing.path, role: 'backing', gainDb },
+    )
+    delete this.infos[sourceId]
+    delete this.peaks[sourceId]
+    this.notify('ボーカルと伴奏に分離しました')
   }
 
   notify(msg: string) {
