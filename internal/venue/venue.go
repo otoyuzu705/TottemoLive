@@ -91,6 +91,11 @@ const (
 	irFadeInMs   = 3.0               // 立ち上がりのクリックを避ける
 )
 
+// IRSeconds は BuildIR が作る会場IRの長さ(秒、プリディレイを含む)。
+func IRSeconds(pr Preset, r project.Reverb) float64 {
+	return pr.RT60Sec*r.DecayScale*irTailMargin + r.PreDelayMs*1e-3
+}
+
 // BuildIR は会場IR(左右)を作る。r.DecayScale で残響の長さ、r.HighDampHz で高域ダンプ、
 // r.PreDelayMs でプリディレイを決める。左右合計のエネルギーを1にそろえるので、
 // 残響の長さを変えても音量は変わらない。
