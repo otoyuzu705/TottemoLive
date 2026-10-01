@@ -8,7 +8,7 @@
   "frontend:dev:serverUrl": "auto",
   "info": {
     "productName": "TottemoLive",
-    "productVersion": "0.1.0",
+    "productVersion": "1.0.0",
     "comments": "楽曲をライブ会場の座席で聴いているようなバイノーラル音源に変換する"
   },
   "author": {
