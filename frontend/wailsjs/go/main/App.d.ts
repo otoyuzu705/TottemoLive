@@ -43,4 +43,8 @@ export function SaveProject(arg1:string,arg2:project.Project):Promise<void>;
 
 export function SaveSoundPreset(arg1:string,arg2:project.Project):Promise<void>;
 
+export function SeparateSource(arg1:string):Promise<string>;
+
 export function StartExport(arg1:project.Project,arg2:string):Promise<string>;
+
+export function StemSeparationAvailable():Promise<boolean>;

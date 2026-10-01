@@ -78,6 +78,14 @@ export function SaveSoundPreset(arg1, arg2) {
   return window['go']['main']['App']['SaveSoundPreset'](arg1, arg2);
 }
 
+export function SeparateSource(arg1) {
+  return window['go']['main']['App']['SeparateSource'](arg1);
+}
+
 export function StartExport(arg1, arg2) {
   return window['go']['main']['App']['StartExport'](arg1, arg2);
+}
+
+export function StemSeparationAvailable() {
+  return window['go']['main']['App']['StemSeparationAvailable']();
 }
