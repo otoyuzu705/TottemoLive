@@ -62,12 +62,12 @@ export function OpenAudioFiles() {
   return window['go']['main']['App']['OpenAudioFiles']();
 }
 
-export function RenderOriginal(arg1, arg2, arg3) {
-  return window['go']['main']['App']['RenderOriginal'](arg1, arg2, arg3);
+export function RenderOriginal(arg1) {
+  return window['go']['main']['App']['RenderOriginal'](arg1);
 }
 
-export function RenderPreview(arg1, arg2, arg3) {
-  return window['go']['main']['App']['RenderPreview'](arg1, arg2, arg3);
+export function RenderPreview(arg1) {
+  return window['go']['main']['App']['RenderPreview'](arg1);
 }
 
 export function SaveProject(arg1, arg2) {

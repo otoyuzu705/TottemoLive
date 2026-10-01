@@ -35,9 +35,9 @@ export function NewProject():Promise<project.Project>;
 
 export function OpenAudioFiles():Promise<Array<main.SourceInfo>>;
 
-export function RenderOriginal(arg1:project.Project,arg2:number,arg3:number):Promise<string>;
+export function RenderOriginal(arg1:project.Project):Promise<string>;
 
-export function RenderPreview(arg1:project.Project,arg2:number,arg3:number):Promise<string>;
+export function RenderPreview(arg1:project.Project):Promise<string>;
 
 export function SaveProject(arg1:string,arg2:project.Project):Promise<void>;
 
