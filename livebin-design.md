@@ -217,13 +217,16 @@ livebin/
 | `RenderPreview(p Project, startSec, lenSec float64) (string, error)` | 指定区間を書き出しと同じ処理でレンダリングし、プレビューURLを返す。段ごとのキャッシュを使う。新しい要求が来ると進行中のプレビューは中断され、中断された呼び出しは空文字とnilを返す(フロントは無視する) |
 | `RenderOriginal(p Project, startSec, lenSec float64) (string, error)` | 同じ区間の原音(ゲインを掛けて足しただけ)のURL。A/B比較用で、ラウドネスはマスターを通して目標にそろえる |
 | `StartExport(p Project, outPath string) (string, error)` | 書き出しジョブを開始し、ジョブIDを返す |
-| `CancelJob(jobID string)` | ジョブの中断 |
+| `CancelJob(jobID string)` | ジョブの中断(書き出し・ステム分離) |
+| `StemSeparationAvailable() bool` | Demucsが使えるか。使えないときフロントは分離ボタンを隠す |
+| `SeparateSource(sourceID string) (string, error)` | 音源をボーカルと伴奏に分離するジョブを開始し、ジョブIDを返す。同じ音源の結果はキャッシュ(`os.UserCacheDir()/livebin/stems`)される |
 
 **イベント(`runtime.EventsEmit`)**
 
 - `render:progress` … `{jobId, stage, ratio}`。stageは decode / process / encode
 - `render:done` … `{jobId, path}`
-- `render:error` … `{jobId, message}`
+- `render:error` … `{jobId, message}`(中断もこのイベント)
+- `separate:progress` … `{jobId, sourceId, ratio}`、`separate:done` … `{jobId, sourceId, vocals, backing}`(分離した2本は取り込み済みの `SourceInfo`)、`separate:error` … `{jobId, sourceId, message}`
 
 **プレビュー音声の受け渡し**
 
@@ -238,7 +241,7 @@ livebin/
 1画面構成で、左に素材と会場、中央に会場マップ、右に音作りパネル、下に波形と客席タイムラインを置く。Projectはフロントのstoreで持ち、変更から200ms待って区間プレビューを作り直す。
 
 1. 素材パネル: ドラッグ&ドロップで投入。トラックごとに役割(ボーカル / 伴奏 / 2mix)とゲインを設定
-2. 会場パネル: プリセット選択(ライブハウス / ホール / アリーナ / ドーム)
+2. 会場パネル: プリセット選択(クラブ / ライブハウス / ホール / アリーナ / 野外フェス / ドーム)
 3. 会場マップ: 上から見た図にステージ・PAスピーカー・リスナーを表示。リスナー(座席)とスピーカーをドラッグで動かす
 4. 音作りパネル: `ListParams()`の定義から自動生成する
    - グループ(PA質感 / 空間 / 残響 / 客席 / マスター)ごとに折りたたみ
@@ -323,7 +326,7 @@ Go本体の依存はWailsとgonumに絞り、重いものは子プロセスと�
 | HRIR | MIT KEMAR、SADIE IIなど | SOFA形式はHDF5でGoから読みにくい。事前にPythonでWAV + JSONへ変換して同梱 |
 | 会場IR | OpenAIRなど | IRごとにライセンス条件が異なる |
 | 客席SE | フリー素材、自前収録 | 再配布の可否を確認 |
-| ステム分離 | Demucs(Python、子プロセス) | 重くGPU推奨。初版では任意機能 |
+| ステム分離 | Demucs(Python、子プロセス) | 重くGPU推奨。初版では任意機能。`demucs --two-stems=vocals -n htdemucs -o <出力先> <音源>` を呼び、`vocals.wav` と `no_vocals.wav` を伴奏と合わせて使う。進捗は標準エラーの `NN%|` 表示から読む |
 
 変換した音源を公開する場合は、原曲側の利用条件に従う。piaproで配布されているインストも、その配布条件の範囲で使う。
 
