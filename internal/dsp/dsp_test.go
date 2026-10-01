@@ -2,6 +2,7 @@ package dsp
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
 	"testing"
@@ -23,34 +24,70 @@ func rms(x []float32) float64 {
 	return math.Sqrt(s / float64(len(x)))
 }
 
+func direct(x, h []float32, o int) float64 {
+	sum := 0.0
+	for k := range h {
+		if j := o - k; j >= 0 && j < len(x) {
+			sum += float64(x[j]) * float64(h[k])
+		}
+	}
+	return sum
+}
+
+func randSignal(rng *rand.Rand, n int) []float32 {
+	x := make([]float32, n)
+	for i := range x {
+		x[i] = rng.Float32()*2 - 1
+	}
+	return x
+}
+
+func checkConv(t *testing.T, name string, got []float32, x, h []float32, step int) {
+	t.Helper()
+	if len(got) != len(x)+len(h)-1 {
+		t.Fatalf("%s: len=%d want %d", name, len(got), len(x)+len(h)-1)
+	}
+	for o := 0; o < len(got); o += step {
+		if want := direct(x, h, o); math.Abs(float64(got[o])-want) > 1e-3 {
+			t.Fatalf("%s: o=%d got %v want %v", name, o, got[o], want)
+		}
+	}
+}
+
+// 公開のConvolveが、IR長ごとの分岐(短いIR・分割サイズ)をまたいで直接計算と一致する。
 func TestConvolveMatchesDirect(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
-	for _, c := range []struct{ nx, nh int }{{5000, 100}, {3000, 3500}, {1, 1}, {1024, 1024}, {100, 5000}} {
-		x := make([]float32, c.nx)
-		h := make([]float32, c.nh)
-		for i := range x {
-			x[i] = rng.Float32()*2 - 1
-		}
-		for i := range h {
-			h[i] = rng.Float32()*2 - 1
-		}
+	cases := []struct{ nx, nh int }{
+		{5000, 100}, {1, 1}, {7, 300}, {20000, shortIRMax}, {20000, shortIRMax + 1}, // 短い/境界
+		{3000, 3500}, {1024, 1024}, {100, 5000}, {60000, 20000}, {30000, 140000}, // 長い(分割サイズが変わる)
+	}
+	for _, c := range cases {
+		x, h := randSignal(rng, c.nx), randSignal(rng, c.nh)
 		got, err := Convolve(context.Background(), x, h)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != c.nx+c.nh-1 {
-			t.Fatalf("len=%d want %d", len(got), c.nx+c.nh-1)
+		checkConv(t, "Convolve", got, x, h, 97)
+	}
+}
+
+// 分割サイズをどれにしても結果は同じ(分割サイズはIR長の倍数でなくてもよい)。
+func TestConvolvePartitionedAnyBlock(t *testing.T) {
+	rng := rand.New(rand.NewSource(2))
+	x, h := randSignal(rng, 40000), randSignal(rng, 9000)
+	for _, B := range []int{1024, 2048, 4096, 8192, 16384} {
+		got, err := convolvePartitioned(context.Background(), x, h, B)
+		if err != nil {
+			t.Fatal(err)
 		}
-		for o := 0; o < len(got); o += 7 {
-			want := 0.0
-			for k := 0; k < c.nh; k++ {
-				if j := o - k; j >= 0 && j < c.nx {
-					want += float64(x[j]) * float64(h[k])
-				}
-			}
-			if math.Abs(float64(got[o])-want) > 1e-3 {
-				t.Fatalf("nx=%d nh=%d o=%d got %v want %v", c.nx, c.nh, o, got[o], want)
-			}
+		checkConv(t, fmt.Sprintf("B=%d", B), got, x, h, 101)
+	}
+}
+
+func TestPartitionSize(t *testing.T) {
+	for irLen, want := range map[int]int{513: BlockSize, 16000: BlockSize, 40000: 2560/1*0 + 4096, 149760: maxPartition, 1 << 22: maxPartition} {
+		if got := partitionSize(irLen); got != want {
+			t.Errorf("partitionSize(%d)=%d want %d", irLen, got, want)
 		}
 	}
 }
