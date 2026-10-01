@@ -22,7 +22,7 @@
   const snap = (v: number, step = SNAP) => Math.round(v / step) * step
 
   let svg = $state<SVGSVGElement>()
-  type Target = { kind: 'listener' } | { kind: 'speaker'; index: number } | { kind: 'yaw' }
+  type Target = { kind: 'listener' } | { kind: 'speaker'; index: number } | { kind: 'sub'; index: number } | { kind: 'yaw' }
   let drag = $state<Target | null>(null)
   let tip = $state('')
 
@@ -41,9 +41,10 @@
     app.proj.listener.y = clamp(snap(y), 0, preset.depthM)
   }
 
-  function moveSpeaker(i: number, x: number, y: number) {
+  /** メインPA(kind 'speaker')とサブ(kind 'sub')は同じ規則で動かす。 */
+  function movePA(kind: 'speaker' | 'sub', i: number, x: number, y: number) {
     if (!app.proj || !preset) return
-    const s = app.proj.venue.speakers[i]
+    const s = kind === 'speaker' ? app.proj.venue.speakers[i] : app.proj.venue.subs[i]
     s.x = clamp(snap(x), -preset.widthM / 2, preset.widthM / 2)
     s.y = clamp(snap(y), -STAGE_DEPTH, preset.depthM)
   }
@@ -58,7 +59,7 @@
     if (!drag || !app.proj) return
     const { x, y } = toWorld(e)
     if (drag.kind === 'listener') moveListener(x, y)
-    else if (drag.kind === 'speaker') moveSpeaker(drag.index, x, y)
+    else if (drag.kind === 'speaker' || drag.kind === 'sub') movePA(drag.kind, drag.index, x, y)
     else {
       const l = app.proj.listener
       const deg = (Math.atan2(x - l.x, -(y - l.y)) * 180) / Math.PI
@@ -78,9 +79,9 @@
     const step = e.shiftKey ? 5 : SNAP
     if (target.kind === 'listener') {
       moveListener(app.proj.listener.x + d[0] * step, app.proj.listener.y + d[1] * step)
-    } else if (target.kind === 'speaker') {
-      const s = app.proj.venue.speakers[target.index]
-      moveSpeaker(target.index, s.x + d[0] * step, s.y + d[1] * step)
+    } else if (target.kind === 'speaker' || target.kind === 'sub') {
+      const s = target.kind === 'speaker' ? app.proj.venue.speakers[target.index] : app.proj.venue.subs[target.index]
+      movePA(target.kind, target.index, s.x + d[0] * step, s.y + d[1] * step)
     } else {
       app.proj.listener.yawDeg = (app.proj.listener.yawDeg + d[0] * (e.shiftKey ? 45 : YAW_SNAP) + 360) % 360
     }
@@ -96,7 +97,7 @@
 </script>
 
 <section>
-  <h2>会場マップ <span class="tip">{tip || 'ドラッグで座席・スピーカーを移動、矢印の先のつまみで向きを変更'}</span></h2>
+  <h2>会場マップ <span class="tip">{tip || 'ドラッグで座席・スピーカー・サブを移動、矢印の先のつまみで向きを変更'}</span></h2>
   {#if app.proj && preset}
     <div class="box">
       <svg
@@ -129,6 +130,27 @@
           >
             <rect x={s.x - unit * 1.2} y={s.y - unit * 1.6} width={unit * 2.4} height={unit * 3.2} />
             <text x={s.x} y={s.y} class="spk-label" font-size={unit * 1.5}>{s.id}</text>
+          </g>
+        {/each}
+
+        <!-- サブウーファー(ステージ前の床。サブが無効のときは薄く表示) -->
+        {#each app.proj.venue.subs as s, i (s.id)}
+          <g
+            class="sub"
+            class:off={app.proj.sub.enabled !== 'on'}
+            class:active={drag?.kind === 'sub' && drag.index === i}
+            role="slider"
+            tabindex="0"
+            aria-label={`サブウーファー ${s.id}`}
+            aria-valuetext={where(s.x, s.y)}
+            aria-valuenow={s.x}
+            onpointerdown={(e) => start(e, { kind: 'sub', index: i })}
+            onkeydown={(e) => key(e, { kind: 'sub', index: i })}
+            onpointerenter={() => (tip = `サブ ${s.id}: ${where(s.x, s.y)}`)}
+            onpointerleave={() => (tip = '')}
+          >
+            <rect x={s.x - unit * 1.4} y={s.y - unit * 1.1} width={unit * 2.8} height={unit * 2.2} />
+            <text x={s.x} y={s.y} class="spk-label" font-size={unit * 1.1}>SUB</text>
           </g>
         {/each}
 
@@ -186,11 +208,14 @@
   .speaker { cursor: grab; }
   .speaker rect { fill: var(--accent-dim); stroke: var(--accent); stroke-width: 0.25; }
   .spk-label { fill: var(--text); text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
+  .sub { cursor: grab; }
+  .sub rect { fill: #55c58a33; stroke: var(--ok); stroke-width: 0.25; }
+  .sub.off { opacity: 0.35; }
   .listener { cursor: grab; fill: var(--warn); }
   .listener .hit { fill: transparent; }
   .aim { stroke: var(--warn); opacity: 0.5; pointer-events: none; }
   .yaw { fill: var(--bg); stroke: var(--warn); stroke-width: 0.3; cursor: grab; }
   .active, .active rect { cursor: grabbing; }
-  .speaker:focus-visible rect, .yaw:focus-visible, .listener:focus-visible .hit { stroke: var(--text); stroke-width: 0.4; outline: none; }
+  .speaker:focus-visible rect, .sub:focus-visible rect, .yaw:focus-visible, .listener:focus-visible .hit { stroke: var(--text); stroke-width: 0.4; outline: none; }
   .listener:focus-visible .hit { fill: #ffffff22; }
 </style>

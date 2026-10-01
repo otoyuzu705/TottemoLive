@@ -45,7 +45,7 @@ func advanced(s ParamSpec) ParamSpec { s.Advanced = true; return s }
 // specs が音作りパラメーターの表。範囲と既定値は設計書の表が正で、M2で聴きながら見直す前提の仮の値。
 // 残響の既定値(preDelayMs, highDampHz)は会場プリセットごとに上書きされる。
 var specs = []ParamSpec{
-	logScale(f("pa.lowCutHz", "低域カット", "pa", "Hz", 20, 200, 1, 60)),
+	logScale(f("pa.lowCutHz", "低域カット", "pa", "Hz", 20, 200, 1, 35)),
 	logScale(f("pa.highShelfHz", "高域シェルフ周波数", "pa", "Hz", 2000, 12000, 100, 6000)),
 	f("pa.highShelfDb", "高域シェルフ量", "pa", "dB", -12, 0, 0.5, -3),
 	f("pa.compThresholdDb", "コンプ スレッショルド", "pa", "dB", -40, 0, 0.5, -18),
@@ -53,6 +53,11 @@ var specs = []ParamSpec{
 	advanced(logScale(f("pa.compAttackMs", "コンプ アタック", "pa", "ms", 1, 100, 1, 10))),
 	advanced(logScale(f("pa.compReleaseMs", "コンプ リリース", "pa", "ms", 20, 1000, 10, 150))),
 	f("pa.drive", "歪み", "pa", "", 0, 1, 0.01, 0.2),
+
+	{Path: "sub.enabled", Label: "サブウーファー", Group: "sub", Kind: KindEnum,
+		Options: []string{"off", "on"}, Default: 1, Scale: "linear"},
+	f("sub.levelDb", "サブ レベル", "sub", "dB", -30, 12, 0.5, 3),
+	logScale(f("sub.crossoverHz", "クロスオーバー周波数", "sub", "Hz", 50, 150, 1, 90)),
 
 	{Path: "spatial.hrirSet", Label: "HRIRの種類", Group: "spatial", Kind: KindEnum,
 		Options: []string{"synthetic"}, Default: 0, Scale: "linear"},
@@ -64,6 +69,10 @@ var specs = []ParamSpec{
 	f("reverb.preDelayMs", "プリディレイ", "reverb", "ms", 0, 150, 1, 40),
 	f("reverb.decayScale", "残響の長さ", "reverb", "倍", 0.5, 1.2, 0.01, 1.0),
 	logScale(f("reverb.highDampHz", "残響の高域ダンプ", "reverb", "Hz", 2000, 16000, 100, 8000)),
+	f("reverb.lowCoherence", "低域の左右の相関", "reverb", "", 0, 1, 0.05, 1),
+	f("reverb.lowDecayScale", "低域の残響の長さ", "reverb", "倍", 0.5, 2.5, 0.05, 1.3),
+	f("reverb.lowLevelDb", "低域の残響レベル", "reverb", "dB", -12, 12, 0.5, 3),
+	advanced(logScale(f("reverb.lowCrossoverHz", "低域の境界周波数", "reverb", "Hz", 80, 500, 5, 250))),
 
 	f("crowd.density", "客席の密度", "crowd", "", 0, 1, 0.01, 0.7),
 	f("crowd.levelDb", "客席レベル", "crowd", "dB", -30, 6, 0.5, -6),

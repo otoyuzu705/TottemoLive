@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"livebin/internal/audio"
-	"livebin/internal/project"
+	"tottemolive/internal/audio"
+	"tottemolive/internal/project"
 )
 
 type events struct {
@@ -229,7 +229,7 @@ func TestSeparateSource(t *testing.T) {
 	a, ev, p := newTestApp(t)
 	a.stemDir = t.TempDir()
 
-	t.Setenv("LIVEBIN_DEMUCS", filepath.Join(t.TempDir(), "none"))
+	t.Setenv("TOTTEMOLIVE_DEMUCS", filepath.Join(t.TempDir(), "none"))
 	if a.StemSeparationAvailable() {
 		t.Fatal("should be unavailable")
 	}
@@ -241,7 +241,7 @@ func TestSeparateSource(t *testing.T) {
 	if out, err := exec.Command("go", "build", "-o", exe, "./internal/separate/testdata/stubdemucs").CombinedOutput(); err != nil {
 		t.Fatalf("build stub: %v %s", err, out)
 	}
-	t.Setenv("LIVEBIN_DEMUCS", exe)
+	t.Setenv("TOTTEMOLIVE_DEMUCS", exe)
 	if !a.StemSeparationAvailable() {
 		t.Fatal("stub should be available")
 	}
@@ -274,4 +274,37 @@ func TestSeparateSource(t *testing.T) {
 	if !progressed {
 		t.Error("no separate:progress event")
 	}
+}
+
+// 旧名のフォルダにあるプリセットは新しい名前のフォルダへ移り、すでに新しいフォルダがあれば触らない。
+func TestMigrateDir(t *testing.T) {
+	root := t.TempDir()
+	oldDir, newDir := filepath.Join(root, "livebin", "presets"), filepath.Join(root, "TottemoLive", "presets")
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldDir, "自作.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	migrateDir(oldDir, newDir)
+	if _, err := os.Stat(filepath.Join(newDir, "自作.json")); err != nil {
+		t.Errorf("preset was not migrated: %v", err)
+	}
+	if _, err := os.Stat(oldDir); err == nil {
+		t.Error("old dir should be gone")
+	}
+
+	// 新しいフォルダがあるときは、旧フォルダがあっても何もしない
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldDir, "他.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	migrateDir(oldDir, newDir)
+	if _, err := os.Stat(filepath.Join(newDir, "他.json")); err == nil {
+		t.Error("existing new dir must not be overwritten")
+	}
+	// どちらも無くてもエラーにならない
+	migrateDir(filepath.Join(root, "none"), filepath.Join(root, "none2"))
 }

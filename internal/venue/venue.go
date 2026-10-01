@@ -11,8 +11,8 @@ import (
 	"math"
 	"math/rand"
 
-	"livebin/internal/dsp"
-	"livebin/internal/project"
+	"tottemolive/internal/dsp"
+	"tottemolive/internal/project"
 )
 
 // Preset は会場1つぶんの定義。
@@ -22,6 +22,7 @@ type Preset struct {
 	WidthM   float64           `json:"widthM"` // 客席側の横幅(x は ±WidthM/2)
 	DepthM   float64           `json:"depthM"` // ステージ中央から客席最後方までの距離(y は 0〜DepthM)
 	Speakers []project.Speaker `json:"speakers"`
+	Subs     []project.Speaker `json:"subs"`
 	Reverb   project.Reverb    `json:"reverb"`  // 残響パラメーターの既定値
 	RT60Sec  float64           `json:"rt60Sec"` // 会場IRの残響時間(decayScale=1)
 }
@@ -29,28 +30,49 @@ type Preset struct {
 var presets = []Preset{
 	{ID: "club", Name: "クラブ", WidthM: 8, DepthM: 10,
 		Speakers: speakers(2, 2),
-		Reverb:   project.Reverb{Mix: 0.2, PreDelayMs: 5, DecayScale: 1, HighDampHz: 9000},
+		Subs:     subs(1.2),
+		Reverb:   reverb(0.2, 5, 9000, 1.2, 3),
 		RT60Sec:  0.35},
 	{ID: "livehouse", Name: "ライブハウス", WidthM: 12, DepthM: 14,
 		Speakers: speakers(3, 2.5),
-		Reverb:   project.Reverb{Mix: 0.25, PreDelayMs: 8, DecayScale: 1, HighDampHz: 7000},
+		Subs:     subs(2),
+		Reverb:   reverb(0.25, 8, 7000, 1.3, 3),
 		RT60Sec:  0.5},
 	{ID: "hall", Name: "ホール", WidthM: 30, DepthM: 40,
 		Speakers: speakers(7, 6),
-		Reverb:   project.Reverb{Mix: 0.35, PreDelayMs: 25, DecayScale: 1, HighDampHz: 6500},
+		Subs:     subs(4),
+		Reverb:   reverb(0.35, 25, 6500, 1.3, 3),
 		RT60Sec:  1.8},
 	{ID: "arena", Name: "アリーナ", WidthM: 80, DepthM: 70,
 		Speakers: speakers(12, 8),
-		Reverb:   project.Reverb{Mix: 0.35, PreDelayMs: 40, DecayScale: 1, HighDampHz: 8000},
+		Subs:     subs(7),
+		Reverb:   reverb(0.35, 40, 8000, 1.3, 3),
 		RT60Sec:  2.8},
 	{ID: "outdoor", Name: "野外フェス", WidthM: 100, DepthM: 120,
 		Speakers: speakers(10, 6),
-		Reverb:   project.Reverb{Mix: 0.12, PreDelayMs: 90, DecayScale: 1, HighDampHz: 7000},
+		Subs:     subs(6),
+		Reverb:   reverb(0.12, 90, 7000, 1.0, 0),
 		RT60Sec:  0.7},
 	{ID: "dome", Name: "ドーム", WidthM: 120, DepthM: 100,
 		Speakers: speakers(18, 14),
-		Reverb:   project.Reverb{Mix: 0.4, PreDelayMs: 70, DecayScale: 1, HighDampHz: 5500},
+		Subs:     subs(10),
+		Reverb:   reverb(0.4, 70, 5500, 1.4, 3),
 		RT60Sec:  3.8},
+}
+
+// subs はステージ前の床の左右(中心から ±x m)に置く2発のサブウーファー。
+func subs(x float64) []project.Speaker {
+	return []project.Speaker{{ID: "SubL", X: -x, Y: 1, Z: 0.3}, {ID: "SubR", X: x, Y: 1, Z: 0.3}}
+}
+
+// reverb は会場プリセットの残響の既定値。低域の残響は、左右の相関を1(自然な拡散音場)、
+// 境界周波数を250 Hzにして、低域の長さの倍率とレベルだけを会場ごとに決める
+// (開けた野外は低域がこもらないので 1.0 倍・0 dB)。
+func reverb(mix, preDelayMs, highDampHz, lowDecayScale, lowLevelDb float64) project.Reverb {
+	return project.Reverb{
+		Mix: mix, PreDelayMs: preDelayMs, DecayScale: 1, HighDampHz: highDampHz,
+		LowCoherence: 1, LowDecayScale: lowDecayScale, LowLevelDb: lowLevelDb, LowCrossoverHz: 250,
+	}
 }
 
 func speakers(x, z float64) []project.Speaker {
@@ -62,6 +84,7 @@ func List() []Preset {
 	out := make([]Preset, len(presets))
 	for i, p := range presets {
 		p.Speakers = append([]project.Speaker(nil), p.Speakers...)
+		p.Subs = append([]project.Speaker(nil), p.Subs...)
 		out[i] = p
 	}
 	return out
@@ -76,7 +99,7 @@ func Get(id string) (Preset, bool) {
 	return Preset{}, false
 }
 
-// Apply は会場を切り替える。venue.speakers と reverb.* をプリセットの値で上書きし、
+// Apply は会場を切り替える。venue.speakers・venue.subs と reverb.* をプリセットの値で上書きし、
 // リスナー位置を部屋の範囲内に収めたプロジェクトを返す。
 func Apply(p project.Project, id string) (project.Project, error) {
 	pr, ok := Get(id)
@@ -86,6 +109,7 @@ func Apply(p project.Project, id string) (project.Project, error) {
 	p = p.Clone()
 	p.Venue.Preset = id
 	p.Venue.Speakers = pr.Speakers
+	p.Venue.Subs = pr.Subs
 	p.Reverb = pr.Reverb
 	p.Listener.X = math.Min(math.Max(p.Listener.X, -pr.WidthM/2), pr.WidthM/2)
 	p.Listener.Y = math.Min(math.Max(p.Listener.Y, 0), pr.DepthM)
@@ -100,39 +124,72 @@ const (
 )
 
 // IRSeconds は BuildIR が作る会場IRの長さ(秒、プリディレイを含む)。
+// 低域の残響が中高域より長いとき(lowDecayScale > 1)は、そちらに合わせる。
 func IRSeconds(pr Preset, r project.Reverb) float64 {
-	return pr.RT60Sec*r.DecayScale*irTailMargin + r.PreDelayMs*1e-3
+	return pr.RT60Sec*r.DecayScale*math.Max(1, r.LowDecayScale)*irTailMargin + r.PreDelayMs*1e-3
 }
 
 // BuildIR は会場IR(左右)を作る。r.DecayScale で残響の長さ、r.HighDampHz で高域ダンプ、
-// r.PreDelayMs でプリディレイを決める。左右合計のエネルギーを1にそろえるので、
-// 残響の長さを変えても音量は変わらない。
+// r.PreDelayMs でプリディレイを決める。
+//
+// 低域(r.LowCrossoverHz 以下)は中高域と別に作る:
+//   - 左右の相関 r.LowCoherence: 自然な拡散音場は、耳の間隔が波長より小さい低域では左右の残響が
+//     ほぼ同じ信号になる(500 Hz 以下で相関が高い)。独立なノイズだけだと低域まで左右バラバラになり、
+//     低音の余韻が軽く広がって重さが出ない。右耳の低域を「左と同じ成分 + 独立な成分」で作り、
+//     相関を LowCoherence にする(1 で左右同じ)
+//   - 残響の長さ r.LowDecayScale: 実際の会場は低域ほど長く残る
+//   - レベル r.LowLevelDb
+//
+// 左右合計のエネルギーを1にそろえるので、残響の長さを変えても音量は変わらない。
 func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
-	rt60 := pr.RT60Sec * r.DecayScale
-	n := int(rt60 * irTailMargin * float64(sr))
+	rtMain := pr.RT60Sec * r.DecayScale
+	rtLow := rtMain * r.LowDecayScale
+	n := int(math.Max(rtMain, rtLow) * irTailMargin * float64(sr))
 	pre := int(r.PreDelayMs * 1e-3 * float64(sr))
 	fade := max(int(irFadeInMs*1e-3*float64(sr)), 1)
+	fs := float64(sr)
 
 	h := fnv.New64a()
 	h.Write([]byte(pr.ID))
+	// 左右それぞれの独立な白色ノイズを、低域と中高域に分ける(LR4で分けると、足し合わせた振幅はフラットのまま)
+	var low, high [2][]float32
+	for c := 0; c < 2; c++ {
+		rng := rand.New(rand.NewSource(int64(h.Sum64()) + int64(c)*7919))
+		noise := make([]float32, n)
+		for i := range noise {
+			noise[i] = float32(rng.Float64()*2 - 1)
+		}
+		low[c] = append([]float32(nil), noise...)
+		dsp.LR4LowPass(low[c], fs, r.LowCrossoverHz)
+		dsp.LR4HighPass(noise, fs, r.LowCrossoverHz)
+		high[c] = noise
+	}
+	// 右の低域 = c × 左の低域 + √(1-c²) × 右の独立な低域(どちらも同じ強さなので、相関は c になる)
+	c := math.Min(math.Max(r.LowCoherence, 0), 1)
+	for i := range low[1] {
+		low[1][i] = float32(c*float64(low[0][i]) + math.Sqrt(1-c*c)*float64(low[1][i]))
+	}
+
+	gLow := dsp.DbToLin(r.LowLevelDb)
 	out := make([][]float32, 2)
 	total := 0.0
-	for c := range out {
-		rng := rand.New(rand.NewSource(int64(h.Sum64()) + int64(c)*7919))
+	for ch := range out {
 		ir := make([]float32, pre+n)
 		for i := 0; i < n; i++ {
-			t := float64(i) / float64(sr)
-			env := math.Exp(-ln1000 * t / rt60)
+			t := float64(i) / fs
+			envMain := math.Exp(-ln1000 * t / rtMain)
+			envLow := math.Exp(-ln1000 * t / rtLow)
 			if i < fade {
-				env *= float64(i) / float64(fade)
+				f := float64(i) / float64(fade)
+				envMain, envLow = envMain*f, envLow*f
 			}
-			ir[pre+i] = float32((rng.Float64()*2 - 1) * env)
+			ir[pre+i] = float32(float64(high[ch][i])*envMain + gLow*float64(low[ch][i])*envLow)
 		}
-		dsp.LowPass(float64(sr), r.HighDampHz).Process(ir)
+		dsp.LowPass(fs, r.HighDampHz).Process(ir)
 		for _, v := range ir {
 			total += float64(v) * float64(v)
 		}
-		out[c] = ir
+		out[ch] = ir
 	}
 	if total > 0 {
 		g := float32(1 / math.Sqrt(total/2))

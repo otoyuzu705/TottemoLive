@@ -11,13 +11,13 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"livebin/assets"
-	"livebin/internal/audio"
-	"livebin/internal/params"
-	"livebin/internal/project"
-	"livebin/internal/render"
-	"livebin/internal/separate"
-	"livebin/internal/venue"
+	"tottemolive/assets"
+	"tottemolive/internal/audio"
+	"tottemolive/internal/params"
+	"tottemolive/internal/project"
+	"tottemolive/internal/render"
+	"tottemolive/internal/separate"
+	"tottemolive/internal/venue"
 )
 
 // App はフロントに公開するメソッドを持つ。Wailsに依存してよいのは main.go とこのファイルだけ。
@@ -36,6 +36,27 @@ type App struct {
 	sources map[string]string // 音源ID → パス(GetPeaks 用)
 }
 
+// ユーザーデータ(プリセット・キャッシュ)を置くフォルダ名。legacyAppDir はプロジェクト名を変える前の名前。
+const (
+	appDir       = "TottemoLive"
+	legacyAppDir = "livebin"
+)
+
+// migrateDir は、旧フォルダがあり新フォルダが無いときだけ、旧フォルダを新しい場所へ移す。
+// 失敗しても起動は続ける(その場合は新しい名前で空の状態から始まる)。
+func migrateDir(oldDir, newDir string) {
+	if _, err := os.Stat(newDir); err == nil {
+		return
+	}
+	if _, err := os.Stat(oldDir); err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(newDir), 0o755); err != nil {
+		return
+	}
+	_ = os.Rename(oldDir, newDir)
+}
+
 func NewApp() *App {
 	userDir, err := os.UserConfigDir()
 	if err != nil {
@@ -45,12 +66,15 @@ func NewApp() *App {
 	if err != nil {
 		cacheDir = os.TempDir()
 	}
+	// 旧名(livebin)の時期に保存したプリセットとキャッシュを、新しい名前のフォルダへ引き継ぐ
+	migrateDir(filepath.Join(userDir, legacyAppDir, "presets"), filepath.Join(userDir, appDir, "presets"))
+	migrateDir(filepath.Join(cacheDir, legacyAppDir, "stems"), filepath.Join(cacheDir, appDir, "stems"))
 	return &App{
-		stemDir: filepath.Join(cacheDir, "livebin", "stems"),
+		stemDir: filepath.Join(cacheDir, appDir, "stems"),
 		engine:  render.NewEngine(),
 		jobs:    render.NewJobs(),
 		store:   render.NewStore(3),
-		presets: &project.PresetStore{UserDir: filepath.Join(userDir, "livebin", "presets"), Shipped: assets.ShippedPresets()},
+		presets: &project.PresetStore{UserDir: filepath.Join(userDir, appDir, "presets"), Shipped: assets.ShippedPresets()},
 		sources: map[string]string{},
 		ctx:     context.Background(),
 		emit:    func(string, any) {},
@@ -161,7 +185,7 @@ func (a *App) SeparateSource(sourceID string) (string, error) {
 		return "", fmt.Errorf("不明な音源ID %q", sourceID)
 	}
 	if !separate.Available() {
-		return "", errors.New("Demucs が見つかりません(PATH に demucs を入れるか、環境変数 LIVEBIN_DEMUCS で場所を指定してください)")
+		return "", errors.New("Demucs が見つかりません(PATH に demucs を入れるか、環境変数 TOTTEMOLIVE_DEMUCS で場所を指定してください)")
 	}
 	id, ctx, done := a.jobs.Begin(a.ctx, "")
 	go func() {
@@ -222,7 +246,7 @@ func (a *App) LoadProject(path string) (project.Project, error) {
 
 func (a *App) SaveProject(path string, p project.Project) error { return project.Save(path, p) }
 
-var projectFilter = runtime.FileFilter{DisplayName: "livebinプロジェクト (*.json)", Pattern: "*.json"}
+var projectFilter = runtime.FileFilter{DisplayName: "TottemoLiveプロジェクト (*.json)", Pattern: "*.json"}
 
 // ChooseProjectToOpen は開くプロジェクトファイルを選ぶ。キャンセルは空文字。
 func (a *App) ChooseProjectToOpen() (string, error) {
@@ -241,7 +265,7 @@ func (a *App) ChooseProjectSavePath() (string, error) {
 // ChooseExportPath は書き出し先のWAVを選ぶ。キャンセルは空文字。
 func (a *App) ChooseExportPath() (string, error) {
 	return runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title: "書き出し先", DefaultFilename: "livebin.wav",
+		Title: "書き出し先", DefaultFilename: "TottemoLive.wav",
 		Filters: []runtime.FileFilter{{DisplayName: "WAV (*.wav)", Pattern: "*.wav"}},
 	})
 }

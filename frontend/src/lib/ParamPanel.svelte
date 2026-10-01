@@ -7,11 +7,15 @@
   // 音作りパネル。ListParams() の定義から自動生成する。パラメーターを足してもここは変えない。
   const GROUPS: Record<string, string> = {
     pa: 'PA質感',
+    sub: 'サブウーファー',
     spatial: '空間',
     reverb: '残響',
     crowd: '客席',
     master: 'マスター',
   }
+
+  // 選択肢の内部の値(JSONの値)と表示名が違うもの
+  const OPTION_LABELS: Record<string, string> = { off: 'オフ', on: 'オン' }
 
   let showAdvanced = $state(false)
   let collapsed = $state<Record<string, boolean>>({})
@@ -129,7 +133,7 @@
                 </span>
                 {#if spec.kind === 'enum'}
                   <select value={v as string} onchange={(e) => set(spec, e.currentTarget.value)}>
-                    {#each spec.options as o (o)}<option value={o}>{o}</option>{/each}
+                    {#each spec.options as o (o)}<option value={o}>{OPTION_LABELS[o] ?? o}</option>{/each}
                   </select>
                 {:else if spec.kind === 'int'}
                   <input type="number" min={spec.min} max={spec.max} step={spec.step} value={v as number} onchange={(e) => onNumber(spec, e.currentTarget.value)} />

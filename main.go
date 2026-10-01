@@ -16,7 +16,7 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:     "livebin",
+		Title:     "TottemoLive",
 		Width:     1360,
 		Height:    860,
 		MinWidth:  1100,

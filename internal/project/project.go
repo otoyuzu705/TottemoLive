@@ -9,7 +9,7 @@ import (
 	"os"
 	"sort"
 
-	"livebin/internal/params"
+	"tottemolive/internal/params"
 )
 
 const (
@@ -38,9 +38,11 @@ type Speaker struct {
 	Z  float64 `json:"z"`
 }
 
+// Venue は会場。Speakers はメインPA、Subs はサブウーファー(低域だけを受け持つ)の位置。
 type Venue struct {
 	Preset   string    `json:"preset"`
 	Speakers []Speaker `json:"speakers"`
+	Subs     []Speaker `json:"subs"`
 }
 
 // Listener は座席。YawDeg は 0 でステージ(-y方向)を向き、正で右回り。
@@ -62,6 +64,15 @@ type PA struct {
 	Drive           float64 `json:"drive"`
 }
 
+// Sub はサブウーファー経路の設定。Enabled は "off" / "on"。
+// 有効なとき、PA出力を CrossoverHz で分け、低域はサブへ、中高域はメインへ送る。
+// LevelDb 0 で、中央に定位した低音について、サブ合計の低域がメインの低域と同じ大きさ。
+type Sub struct {
+	Enabled     string  `json:"enabled"`
+	LevelDb     float64 `json:"levelDb"`
+	CrossoverHz float64 `json:"crossoverHz"`
+}
+
 type Spatial struct {
 	HrirSet         string  `json:"hrirSet"`
 	DistanceRolloff float64 `json:"distanceRolloff"`
@@ -74,6 +85,12 @@ type Reverb struct {
 	PreDelayMs float64 `json:"preDelayMs"`
 	DecayScale float64 `json:"decayScale"`
 	HighDampHz float64 `json:"highDampHz"`
+	// 低域の残響。LowCrossoverHz 以下について、左右の相関(1で左右同じ信号 = 自然な拡散音場)、
+	// 残響の長さの倍率(実際の会場は低域ほど長く残る)、レベルを決める。
+	LowCoherence   float64 `json:"lowCoherence"`
+	LowDecayScale  float64 `json:"lowDecayScale"`
+	LowLevelDb     float64 `json:"lowLevelDb"`
+	LowCrossoverHz float64 `json:"lowCrossoverHz"`
 }
 
 type Keyframe struct {
@@ -108,6 +125,7 @@ type Project struct {
 	Venue    Venue    `json:"venue"`
 	Listener Listener `json:"listener"`
 	PA       PA       `json:"pa"`
+	Sub      Sub      `json:"sub"`
 	Spatial  Spatial  `json:"spatial"`
 	Reverb   Reverb   `json:"reverb"`
 	Crowd    Crowd    `json:"crowd"`
@@ -115,12 +133,17 @@ type Project struct {
 }
 
 // DefaultVenue は既定の会場(アリーナ)の設定。venueパッケージのアリーナプリセットと一致させる(テストで確認)。
+// サブウーファーはステージ前の床の左右に置く。
 func DefaultVenue() Venue {
 	return Venue{
 		Preset: "arena",
 		Speakers: []Speaker{
 			{ID: "L", X: -12, Y: 0, Z: 8},
 			{ID: "R", X: 12, Y: 0, Z: 8},
+		},
+		Subs: []Speaker{
+			{ID: "SubL", X: -7, Y: 1, Z: 0.3},
+			{ID: "SubR", X: 7, Y: 1, Z: 0.3},
 		},
 	}
 }
@@ -190,6 +213,7 @@ func normalizeClapRanges(rs []ClapRange) []ClapRange {
 func (p Project) Clone() Project {
 	p.Sources = append([]Source{}, p.Sources...)
 	p.Venue.Speakers = append([]Speaker{}, p.Venue.Speakers...)
+	p.Venue.Subs = append([]Speaker{}, p.Venue.Subs...)
 	p.Crowd.Keyframes = append([]Keyframe{}, p.Crowd.Keyframes...)
 	p.Crowd.ClapRanges = append([]ClapRange{}, p.Crowd.ClapRanges...)
 	return p
