@@ -6,6 +6,11 @@
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
+  "info": {
+    "productName": "livebin",
+    "productVersion": "0.1.0",
+    "comments": "楽曲をライブ会場の座席で聴いているようなバイノーラル音源に変換する"
+  },
   "author": {
     "name": "otoyuzu705",
     "email": "otoyuzu705@gmail.com"
