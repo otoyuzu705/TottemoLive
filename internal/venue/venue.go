@@ -31,38 +31,48 @@ var presets = []Preset{
 	{ID: "club", Name: "クラブ", WidthM: 8, DepthM: 10,
 		Speakers: speakers(2, 2),
 		Subs:     subs(1.2),
-		Reverb:   project.Reverb{Mix: 0.2, PreDelayMs: 5, DecayScale: 1, HighDampHz: 9000},
+		Reverb:   reverb(0.2, 5, 9000, 1.2, 3),
 		RT60Sec:  0.35},
 	{ID: "livehouse", Name: "ライブハウス", WidthM: 12, DepthM: 14,
 		Speakers: speakers(3, 2.5),
 		Subs:     subs(2),
-		Reverb:   project.Reverb{Mix: 0.25, PreDelayMs: 8, DecayScale: 1, HighDampHz: 7000},
+		Reverb:   reverb(0.25, 8, 7000, 1.3, 3),
 		RT60Sec:  0.5},
 	{ID: "hall", Name: "ホール", WidthM: 30, DepthM: 40,
 		Speakers: speakers(7, 6),
 		Subs:     subs(4),
-		Reverb:   project.Reverb{Mix: 0.35, PreDelayMs: 25, DecayScale: 1, HighDampHz: 6500},
+		Reverb:   reverb(0.35, 25, 6500, 1.3, 3),
 		RT60Sec:  1.8},
 	{ID: "arena", Name: "アリーナ", WidthM: 80, DepthM: 70,
 		Speakers: speakers(12, 8),
 		Subs:     subs(7),
-		Reverb:   project.Reverb{Mix: 0.35, PreDelayMs: 40, DecayScale: 1, HighDampHz: 8000},
+		Reverb:   reverb(0.35, 40, 8000, 1.3, 3),
 		RT60Sec:  2.8},
 	{ID: "outdoor", Name: "野外フェス", WidthM: 100, DepthM: 120,
 		Speakers: speakers(10, 6),
 		Subs:     subs(6),
-		Reverb:   project.Reverb{Mix: 0.12, PreDelayMs: 90, DecayScale: 1, HighDampHz: 7000},
+		Reverb:   reverb(0.12, 90, 7000, 1.0, 0),
 		RT60Sec:  0.7},
 	{ID: "dome", Name: "ドーム", WidthM: 120, DepthM: 100,
 		Speakers: speakers(18, 14),
 		Subs:     subs(10),
-		Reverb:   project.Reverb{Mix: 0.4, PreDelayMs: 70, DecayScale: 1, HighDampHz: 5500},
+		Reverb:   reverb(0.4, 70, 5500, 1.4, 3),
 		RT60Sec:  3.8},
 }
 
 // subs はステージ前の床の左右(中心から ±x m)に置く2発のサブウーファー。
 func subs(x float64) []project.Speaker {
 	return []project.Speaker{{ID: "SubL", X: -x, Y: 1, Z: 0.3}, {ID: "SubR", X: x, Y: 1, Z: 0.3}}
+}
+
+// reverb は会場プリセットの残響の既定値。低域の残響は、左右の相関を1(自然な拡散音場)、
+// 境界周波数を250 Hzにして、低域の長さの倍率とレベルだけを会場ごとに決める
+// (開けた野外は低域がこもらないので 1.0 倍・0 dB)。
+func reverb(mix, preDelayMs, highDampHz, lowDecayScale, lowLevelDb float64) project.Reverb {
+	return project.Reverb{
+		Mix: mix, PreDelayMs: preDelayMs, DecayScale: 1, HighDampHz: highDampHz,
+		LowCoherence: 1, LowDecayScale: lowDecayScale, LowLevelDb: lowLevelDb, LowCrossoverHz: 250,
+	}
 }
 
 func speakers(x, z float64) []project.Speaker {
