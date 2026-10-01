@@ -2,6 +2,8 @@ package dsp
 
 import (
 	"math"
+	"runtime"
+	"sync"
 )
 
 // リミッタの処理方式の定数。ユーザーが調整するのはピーク上限(output.ceilingDbTp)だけ。
@@ -58,18 +60,30 @@ func TruePeakLimit(buf [][]float32, sr int, ceilingDb float64) {
 	n := len(buf[0])
 	ceil := DbToLin(ceilingDb)
 
+	// 必要ゲインの計算は各サンプルが独立なので、区間に分けて並列に求める
 	need := make([]float32, n)
-	for i := 0; i < n; i++ {
-		p := 0.0
-		for _, ch := range buf {
-			p = math.Max(p, truePeak(ch, i))
-		}
-		if p > ceil {
-			need[i] = float32(ceil / p)
-		} else {
-			need[i] = 1
-		}
+	workers := runtime.GOMAXPROCS(0)
+	chunk := (n + workers - 1) / workers
+	var wg sync.WaitGroup
+	for lo := 0; lo < n; lo += chunk {
+		hi := min(lo+chunk, n)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := lo; i < hi; i++ {
+				p := 0.0
+				for _, ch := range buf {
+					p = math.Max(p, truePeak(ch, i))
+				}
+				if p > ceil {
+					need[i] = float32(ceil / p)
+				} else {
+					need[i] = 1
+				}
+			}
+		}()
 	}
+	wg.Wait()
 
 	look := max(int(limiterLookaheadMs*1e-3*float64(sr)), 1)
 	gmin := slidingMin(need, look)
