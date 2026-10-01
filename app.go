@@ -16,6 +16,7 @@ import (
 	"livebin/internal/params"
 	"livebin/internal/project"
 	"livebin/internal/render"
+	"livebin/internal/separate"
 	"livebin/internal/venue"
 )
 
@@ -28,6 +29,7 @@ type App struct {
 	jobs    *render.Jobs
 	store   *render.Store
 	presets *project.PresetStore
+	stemDir string // ステム分離の結果のキャッシュ
 
 	mu      sync.Mutex
 	nextSrc int
@@ -39,7 +41,12 @@ func NewApp() *App {
 	if err != nil {
 		userDir = os.TempDir()
 	}
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		cacheDir = os.TempDir()
+	}
 	return &App{
+		stemDir: filepath.Join(cacheDir, "livebin", "stems"),
 		engine:  render.NewEngine(),
 		jobs:    render.NewJobs(),
 		store:   render.NewStore(4),
@@ -71,6 +78,26 @@ type DoneEvent struct {
 type ErrorEvent struct {
 	JobID   string `json:"jobId"`
 	Message string `json:"message"`
+}
+
+type SeparateProgressEvent struct {
+	JobID    string  `json:"jobId"`
+	SourceID string  `json:"sourceId"`
+	Ratio    float64 `json:"ratio"`
+}
+
+// SeparateDoneEvent は分離の完了。Vocals と Backing は取り込み済みの音源(新しいID)。
+type SeparateDoneEvent struct {
+	JobID    string     `json:"jobId"`
+	SourceID string     `json:"sourceId"`
+	Vocals   SourceInfo `json:"vocals"`
+	Backing  SourceInfo `json:"backing"`
+}
+
+type SeparateErrorEvent struct {
+	JobID    string `json:"jobId"`
+	SourceID string `json:"sourceId"`
+	Message  string `json:"message"`
 }
 
 // --- 素材 ---
@@ -118,6 +145,50 @@ func (a *App) AddAudioFiles(paths []string) ([]SourceInfo, error) {
 			DurationSec: info.DurationSec, SampleRate: info.SampleRate, Channels: info.Channels})
 	}
 	return out, errors.Join(errs...)
+}
+
+// StemSeparationAvailable はDemucsが使えるか(任意機能)。使えないときフロントは分離ボタンを隠す。
+func (a *App) StemSeparationAvailable() bool { return separate.Available() }
+
+// SeparateSource は音源をボーカルと伴奏に分離するジョブを開始してジョブIDを返す。
+// 進捗は separate:progress、完了は separate:done(分離した2本は取り込み済み)、
+// 失敗・中断は separate:error で通知する。中断は CancelJob。同じ音源の結果はキャッシュされる。
+func (a *App) SeparateSource(sourceID string) (string, error) {
+	a.mu.Lock()
+	path, ok := a.sources[sourceID]
+	a.mu.Unlock()
+	if !ok {
+		return "", fmt.Errorf("不明な音源ID %q", sourceID)
+	}
+	if !separate.Available() {
+		return "", errors.New("Demucs が見つかりません(PATH に demucs を入れるか、環境変数 LIVEBIN_DEMUCS で場所を指定してください)")
+	}
+	id, ctx, done := a.jobs.Begin(a.ctx, "")
+	go func() {
+		defer done()
+		var last float64
+		stems, err := separate.Separate(ctx, path, a.stemDir, func(r float64) {
+			if r-last >= 0.01 || r >= 1 {
+				last = r
+				a.emit("separate:progress", SeparateProgressEvent{JobID: id, SourceID: sourceID, Ratio: r})
+			}
+		})
+		if err != nil {
+			msg := err.Error()
+			if errors.Is(err, context.Canceled) {
+				msg = "中断しました"
+			}
+			a.emit("separate:error", SeparateErrorEvent{JobID: id, SourceID: sourceID, Message: msg})
+			return
+		}
+		infos, err := a.AddAudioFiles([]string{stems.Vocals, stems.Backing})
+		if err != nil || len(infos) != 2 {
+			a.emit("separate:error", SeparateErrorEvent{JobID: id, SourceID: sourceID, Message: fmt.Sprintf("分離した音源を読み込めません: %v", err)})
+			return
+		}
+		a.emit("separate:done", SeparateDoneEvent{JobID: id, SourceID: sourceID, Vocals: infos[0], Backing: infos[1]})
+	}()
+	return id, nil
 }
 
 // GetPeaks は波形表示用のmin/maxピーク列(長さ 2*width)を返す。描画はフロントのcanvas。

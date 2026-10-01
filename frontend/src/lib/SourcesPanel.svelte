@@ -27,6 +27,18 @@
           {#each ROLES as r (r.id)}<option value={r.id}>{r.label}</option>{/each}
         </select>
         <button class="danger icon" onclick={() => app.removeSource(s.id)} title="削除">✕</button>
+        {#if app.stemAvailable && s.role === 'mix'}
+          {@const job = app.separating[s.id]}
+          <div class="stem">
+            {#if job}
+              <progress max="1" value={job.ratio}></progress>
+              <span>{Math.round(job.ratio * 100)}%</span>
+              <button onclick={() => app.cancelSeparate(s.id)}>中断</button>
+            {:else}
+              <button onclick={() => app.separate(s.id)} title="Demucsでボーカルと伴奏に分けます(重い処理です。結果はキャッシュされます)">ボーカルと伴奏に分離</button>
+            {/if}
+          </div>
+        {/if}
         <div class="gain">
           <span>ゲイン</span>
           <input type="range" min="-24" max="12" step="0.5" bind:value={s.gainDb} aria-label="ゲイン" />
@@ -45,6 +57,8 @@
   .src { display: grid; grid-template-columns: 1fr auto auto; gap: 4px 6px; padding: 8px 0; border-top: 1px solid var(--line); }
   .name { grid-column: 1 / 4; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .meta { grid-column: 1 / 4; color: var(--muted); font-size: 11px; }
+  .stem { grid-column: 1 / 4; display: flex; align-items: center; gap: 8px; }
+  .stem progress { flex: 1; accent-color: var(--accent); }
   .gain { grid-column: 1 / 4; display: grid; grid-template-columns: auto 1fr 5.5ch auto; gap: 6px; align-items: center; color: var(--muted); }
   .gain input[type='number'] { padding: 2px 4px; }
 </style>

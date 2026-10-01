@@ -227,3 +227,54 @@ func TestProgressEmitterThrottles(t *testing.T) {
 		t.Errorf("expected ~100 throttled events, got %d", n)
 	}
 }
+
+func TestSeparateSource(t *testing.T) {
+	a, ev, p := newTestApp(t)
+	a.stemDir = t.TempDir()
+
+	t.Setenv("LIVEBIN_DEMUCS", filepath.Join(t.TempDir(), "none"))
+	if a.StemSeparationAvailable() {
+		t.Fatal("should be unavailable")
+	}
+	if _, err := a.SeparateSource(p.Sources[0].ID); err == nil {
+		t.Error("expected an error when demucs is missing")
+	}
+
+	exe := filepath.Join(t.TempDir(), "demucs.exe")
+	if out, err := exec.Command("go", "build", "-o", exe, "./internal/separate/testdata/stubdemucs").CombinedOutput(); err != nil {
+		t.Fatalf("build stub: %v %s", err, out)
+	}
+	t.Setenv("LIVEBIN_DEMUCS", exe)
+	if !a.StemSeparationAvailable() {
+		t.Fatal("stub should be available")
+	}
+	if _, err := a.SeparateSource("nope"); err == nil {
+		t.Error("unknown source accepted")
+	}
+	id, err := a.SeparateSource(p.Sources[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := ev.wait(t, "separate:done").(SeparateDoneEvent)
+	if done.JobID != id || done.SourceID != p.Sources[0].ID || done.Vocals.ID == "" || done.Backing.ID == done.Vocals.ID {
+		t.Fatalf("done: %+v", done)
+	}
+	if done.Vocals.DurationSec < 2.9 {
+		t.Errorf("vocals info: %+v", done.Vocals)
+	}
+	// 分離した音源は GetPeaks で使える(登録済み)
+	if _, err := a.GetPeaks(done.Vocals.ID, 10); err != nil {
+		t.Error(err)
+	}
+	var progressed bool
+	ev.mu.Lock()
+	for _, e := range ev.list {
+		if e.name == "separate:progress" {
+			progressed = true
+		}
+	}
+	ev.mu.Unlock()
+	if !progressed {
+		t.Error("no separate:progress event")
+	}
+}

@@ -27,6 +27,10 @@ type Preset struct {
 }
 
 var presets = []Preset{
+	{ID: "club", Name: "クラブ", WidthM: 8, DepthM: 10,
+		Speakers: speakers(2, 2),
+		Reverb:   project.Reverb{Mix: 0.2, PreDelayMs: 5, DecayScale: 1, HighDampHz: 9000},
+		RT60Sec:  0.35},
 	{ID: "livehouse", Name: "ライブハウス", WidthM: 12, DepthM: 14,
 		Speakers: speakers(3, 2.5),
 		Reverb:   project.Reverb{Mix: 0.25, PreDelayMs: 8, DecayScale: 1, HighDampHz: 7000},
@@ -39,6 +43,10 @@ var presets = []Preset{
 		Speakers: speakers(12, 8),
 		Reverb:   project.Reverb{Mix: 0.35, PreDelayMs: 40, DecayScale: 1, HighDampHz: 8000},
 		RT60Sec:  2.8},
+	{ID: "outdoor", Name: "野外フェス", WidthM: 100, DepthM: 120,
+		Speakers: speakers(10, 6),
+		Reverb:   project.Reverb{Mix: 0.12, PreDelayMs: 90, DecayScale: 1, HighDampHz: 7000},
+		RT60Sec:  0.7},
 	{ID: "dome", Name: "ドーム", WidthM: 120, DepthM: 100,
 		Speakers: speakers(18, 14),
 		Reverb:   project.Reverb{Mix: 0.4, PreDelayMs: 70, DecayScale: 1, HighDampHz: 5500},
