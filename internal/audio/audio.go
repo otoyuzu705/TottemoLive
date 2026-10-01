@@ -134,6 +134,12 @@ func decodeRaw(ctx context.Context, path string, sr, channels int, startSec, dur
 
 	frameBytes := 4 * channels
 	out := make([][]float32, channels)
+	if expect > 0 {
+		// 長さが分かっているときは事前に確保する(appendの倍々の再確保で、曲の2〜3倍ぶんのメモリを一時的に使わないため)
+		for c := range out {
+			out[c] = make([]float32, 0, int(expect)+sr)
+		}
+	}
 	chunk := make([]byte, frameBytes*8192)
 	have := 0
 	for {
