@@ -129,3 +129,37 @@ func TestOriginal(t *testing.T) {
 		}
 	}
 }
+
+// デコードは、その結果を使う段が必要なときだけ行う(キャッシュに当たる変更ではデコードしない)。
+func TestDecodeOnlyWhenNeeded(t *testing.T) {
+	p := testProject(makeSource(t, t.TempDir()))
+	p.Venue.Preset = "livehouse"
+	e := NewEngine()
+	preview := func(q project.Project) {
+		if _, err := e.Preview(context.Background(), q, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	preview(p)
+	if n := e.decodes.Load(); n != 1 {
+		t.Fatalf("first preview decoded %d times", n)
+	}
+	for name, mod := range map[string]func(*project.Project){
+		"reverb.mix":   func(q *project.Project) { q.Reverb.Mix = 0.7 },
+		"listener":     func(q *project.Project) { q.Listener.X = 2 },
+		"reverb.decay": func(q *project.Project) { q.Reverb.DecayScale = 0.6 },
+	} {
+		q := p.Clone()
+		mod(&q)
+		preview(q)
+		if n := e.decodes.Load(); n != 1 {
+			t.Errorf("%s: decoded again (%d)", name, n)
+		}
+	}
+	q := p.Clone()
+	q.PA.LowCutHz = 150
+	preview(q)
+	if n := e.decodes.Load(); n != 2 {
+		t.Errorf("pa change should decode once more, total %d", n)
+	}
+}

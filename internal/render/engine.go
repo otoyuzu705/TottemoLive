@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"livebin/internal/project"
 )
@@ -18,7 +19,8 @@ import (
 // (漏れると、値を変えても音が変わらないバグになる)。
 // 段(スロット)ごとに最新の1件だけを持つので、メモリは曲の長さに比例した一定量で収まる。
 type Engine struct {
-	cache *cache // nil ならキャッシュなし(書き出し)
+	cache   *cache       // nil ならキャッシュなし(書き出し)
+	decodes atomic.Int64 // デコードした回数(テスト用)
 }
 
 // NewEngine はキャッシュ付きのエンジンを返す。
@@ -37,20 +39,25 @@ func (e *Engine) Original(ctx context.Context, p project.Project) (*Result, erro
 	if err != nil {
 		return nil, err
 	}
-	srcs, err := e.decodeStage(ctx, pp.p.Sources, nil)
-	if err != nil {
-		return nil, err
-	}
-	n := 0
-	for _, s := range srcs {
-		n = max(n, len(s.bufs[0]))
-	}
-	// デコード結果はキャッシュと共有なので、ゲインを掛けながら新しいバッファに足す
-	out := [][]float32{make([]float32, n), make([]float32, n)}
-	for i, s := range srcs {
+	srcs := e.sources(pp.p.Sources, nil)
+	// 音源ごとにデコードして、ゲインを掛けながらバスに足す(全音源を同時には持たない)
+	var out [][]float32
+	for i, src := range srcs {
+		buf, err := src.load(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if out == nil {
+			out = [][]float32{make([]float32, len(buf[0])), make([]float32, len(buf[0]))}
+		}
+		for c := range out {
+			if len(buf[c]) > len(out[c]) {
+				out[c] = append(out[c], make([]float32, len(buf[c])-len(out[c]))...)
+			}
+		}
 		g := float32(math.Pow(10, pp.p.Sources[i].GainDb/20))
 		for c := range out {
-			for k, v := range s.bufs[c] {
+			for k, v := range buf[c] {
 				out[c][k] += v * g
 			}
 		}
@@ -107,6 +114,9 @@ func memo[T any](c *cache, slot, key string, compute func() (T, error)) (T, erro
 			c.mu.Unlock()
 			return e.val.(T), nil
 		}
+		// 失敗・中断のときに備えて古い出力を残す価値は小さい(キーが変わった段は、どのみち作り直す)ので、
+		// 作り直す前に捨てて、新旧が同時にメモリに載らないようにする
+		delete(c.slots, slot)
 		c.mu.Unlock()
 	}
 	v, err := compute()
