@@ -1,0 +1,73 @@
+// Package dsp は信号処理の部品(Biquad、コンプ、歪み、分割FFT畳み込み、ラウドネス測定、リミッタ)を持つ。
+// 音に関わる数値は呼び出し側(Projectのパラメーター)から受け取る。
+// ここにある定数は、ユーザーが触らない処理方式そのものの形(Butterworth Q など)に限る。
+package dsp
+
+import "math"
+
+// BlockSize は内部処理のブロックサイズ(畳み込みの分割単位)。
+const BlockSize = 1024
+
+// butterworthQ は2次Butterworthの Q。
+const butterworthQ = 0.70710678118654752
+
+func DbToLin(db float64) float64 { return math.Pow(10, db/20) }
+
+func LinToDb(x float64) float64 { return 20 * math.Log10(math.Max(x, 1e-12)) }
+
+// Biquad はRBJ cookbookの2次フィルタ(転置直接形II、状態はfloat64)。
+type Biquad struct {
+	b0, b1, b2, a1, a2 float64
+	z1, z2             float64
+}
+
+func newBiquad(b0, b1, b2, a0, a1, a2 float64) *Biquad {
+	return &Biquad{b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0}
+}
+
+func clampFreq(fs, f0 float64) float64 {
+	return math.Min(math.Max(f0, 1), fs*0.49)
+}
+
+func HighPass(fs, f0 float64) *Biquad {
+	w := 2 * math.Pi * clampFreq(fs, f0) / fs
+	c, alpha := math.Cos(w), math.Sin(w)/(2*butterworthQ)
+	return newBiquad((1+c)/2, -(1 + c), (1+c)/2, 1+alpha, -2*c, 1-alpha)
+}
+
+func LowPass(fs, f0 float64) *Biquad {
+	w := 2 * math.Pi * clampFreq(fs, f0) / fs
+	c, alpha := math.Cos(w), math.Sin(w)/(2*butterworthQ)
+	return newBiquad((1-c)/2, 1-c, (1-c)/2, 1+alpha, -2*c, 1-alpha)
+}
+
+// HighShelf は shelf slope S=1 の高域シェルフ。
+func HighShelf(fs, f0, gainDb float64) *Biquad {
+	A := math.Pow(10, gainDb/40)
+	w := 2 * math.Pi * clampFreq(fs, f0) / fs
+	c, s := math.Cos(w), math.Sin(w)
+	alpha := s / 2 * math.Sqrt2 // S=1 のとき (A+1/A)(1/S-1)+2 = 2
+	sq := 2 * math.Sqrt(A) * alpha
+	return newBiquad(
+		A*((A+1)+(A-1)*c+sq),
+		-2*A*((A-1)+(A+1)*c),
+		A*((A+1)+(A-1)*c-sq),
+		(A+1)-(A-1)*c+sq,
+		2*((A-1)-(A+1)*c),
+		(A+1)-(A-1)*c-sq,
+	)
+}
+
+func (b *Biquad) ProcessSample(x float64) float64 {
+	y := b.b0*x + b.z1
+	b.z1 = b.b1*x - b.a1*y + b.z2
+	b.z2 = b.b2*x - b.a2*y
+	return y
+}
+
+// Process はxをその場でフィルタする。
+func (b *Biquad) Process(x []float32) {
+	for i, v := range x {
+		x[i] = float32(b.ProcessSample(float64(v)))
+	}
+}
