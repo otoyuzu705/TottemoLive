@@ -21,7 +21,7 @@
       <label>高さ z<input type="number" step="0.1" bind:value={app.proj.listener.z} /></label>
       <label>向き°<input type="number" step="5" bind:value={app.proj.listener.yawDeg} /></label>
     </div>
-    <div class="meta">ステージ中央が原点(m)。x は右、y は客席側。会場マップでのドラッグ操作は次のマイルストーンで追加します。</div>
+    <div class="meta">ステージ中央が原点(m)。x は右、y は客席側。会場マップ上でもドラッグで動かせます。</div>
   {/if}
 </section>
 
