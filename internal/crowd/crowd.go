@@ -12,9 +12,9 @@ import (
 	"sort"
 	"sync"
 
-	"livebin/internal/dsp"
-	"livebin/internal/project"
-	"livebin/internal/spatial"
+	"tottemolive/internal/dsp"
+	"tottemolive/internal/project"
+	"tottemolive/internal/spatial"
 )
 
 // 客席SEの合成方式の形を決める定数。ユーザーが調整するのは密度・レベル・散布半径・シードと、

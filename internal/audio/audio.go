@@ -1,5 +1,5 @@
 // Package audio はffmpeg/ffprobeを子プロセスとして呼び、デコード(生PCM受け取り)とWAVエンコードを行う。
-// 形式ごとの純Goデコーダは持たない。ffmpegがPATH上に必要(環境変数 LIVEBIN_FFMPEG / LIVEBIN_FFPROBE で上書き可)。
+// 形式ごとの純Goデコーダは持たない。ffmpegがPATH上に必要(環境変数 TOTTEMOLIVE_FFMPEG / TOTTEMOLIVE_FFPROBE で上書き可)。
 package audio
 
 import (
@@ -29,7 +29,7 @@ func bin(env, def string) string {
 
 // Available はffmpegが実行できるかを返す。
 func Available() bool {
-	_, err := exec.LookPath(bin("LIVEBIN_FFMPEG", "ffmpeg"))
+	_, err := exec.LookPath(bin("TOTTEMOLIVE_FFMPEG", "ffmpeg"))
 	return err == nil
 }
 
@@ -42,7 +42,7 @@ type Info struct {
 
 // Probe はffprobeで長さ・サンプルレート・チャンネル数を取得する。
 func Probe(ctx context.Context, path string) (Info, error) {
-	cmd := exec.CommandContext(ctx, bin("LIVEBIN_FFPROBE", "ffprobe"),
+	cmd := exec.CommandContext(ctx, bin("TOTTEMOLIVE_FFPROBE", "ffprobe"),
 		"-v", "error", "-select_streams", "a:0",
 		"-show_entries", "stream=sample_rate,channels:format=duration",
 		"-of", "json", path)
@@ -121,7 +121,7 @@ func decodeRaw(ctx context.Context, path string, sr, channels int, startSec, dur
 	}
 	args = append(args, "-i", path, "-vn",
 		"-f", "f32le", "-ac", strconv.Itoa(channels), "-ar", strconv.Itoa(sr), "pipe:1")
-	cmd := exec.CommandContext(ctx, bin("LIVEBIN_FFMPEG", "ffmpeg"), args...)
+	cmd := exec.CommandContext(ctx, bin("TOTTEMOLIVE_FFMPEG", "ffmpeg"), args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
@@ -177,7 +177,7 @@ func EncodeWAV(ctx context.Context, path string, buf [][]float32, sr int, progre
 	if len(buf) != Channels {
 		return fmt.Errorf("audio: stereo buffer required")
 	}
-	cmd := exec.CommandContext(ctx, bin("LIVEBIN_FFMPEG", "ffmpeg"),
+	cmd := exec.CommandContext(ctx, bin("TOTTEMOLIVE_FFMPEG", "ffmpeg"),
 		"-v", "error", "-y", "-f", "f32le", "-ar", strconv.Itoa(sr), "-ac", strconv.Itoa(Channels),
 		"-i", "pipe:0", "-c:a", "pcm_s24le", "-f", "wav", path)
 	var stderr bytes.Buffer

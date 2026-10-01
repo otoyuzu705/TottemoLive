@@ -3,7 +3,7 @@ package assets
 import (
 	"testing"
 
-	"livebin/internal/project"
+	"tottemolive/internal/project"
 )
 
 // 出荷時プリセットがすべて読め、範囲内の値で、別プロジェクトに適用できる。

@@ -1,8 +1,8 @@
-// livebin-cli は同じエンジン(internal/)をWailsなしで呼ぶCLI。動作確認・テスト・一括変換用。
+// tottemolive-cli は同じエンジン(internal/)をWailsなしで呼ぶCLI。動作確認・テスト・一括変換用。
 //
-//	livebin-cli render project.json -o out.wav --set pa.lowCutHz=80
-//	livebin-cli params
-//	livebin-cli new -o project.json [音源ファイル ...]
+//	tottemolive-cli render project.json -o out.wav --set pa.lowCutHz=80
+//	tottemolive-cli params
+//	tottemolive-cli new -o project.json [音源ファイル ...]
 package main
 
 import (
@@ -18,16 +18,16 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"livebin/internal/params"
-	"livebin/internal/project"
-	"livebin/internal/render"
-	"livebin/internal/venue"
+	"tottemolive/internal/params"
+	"tottemolive/internal/project"
+	"tottemolive/internal/render"
+	"tottemolive/internal/venue"
 )
 
 const usage = `使い方:
-  livebin-cli render <project.json> -o <out.wav> [--set パス=値 ...] [--venue ID]
-  livebin-cli params                       音作りパラメーターの一覧
-  livebin-cli new -o <project.json> [音源 ...]   既定値のプロジェクトを作る
+  tottemolive-cli render <project.json> -o <out.wav> [--set パス=値 ...] [--venue ID]
+  tottemolive-cli params                       音作りパラメーターの一覧
+  tottemolive-cli new -o <project.json> [音源 ...]   既定値のプロジェクトを作る
 `
 
 type setFlags []string

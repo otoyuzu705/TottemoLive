@@ -31,13 +31,13 @@ type Stems struct {
 }
 
 func bin() string {
-	if v := os.Getenv("LIVEBIN_DEMUCS"); v != "" {
+	if v := os.Getenv("TOTTEMOLIVE_DEMUCS"); v != "" {
 		return v
 	}
 	return "demucs"
 }
 
-// Available はDemucsが実行できるかを返す(環境変数 LIVEBIN_DEMUCS で場所を指定できる)。
+// Available はDemucsが実行できるかを返す(環境変数 TOTTEMOLIVE_DEMUCS で場所を指定できる)。
 func Available() bool {
 	_, err := exec.LookPath(bin())
 	return err == nil
@@ -69,7 +69,7 @@ func Separate(ctx context.Context, path, cacheDir string, progress func(ratio fl
 		return out, nil
 	}
 	if !Available() {
-		return Stems{}, errors.New("Demucs が見つかりません(PATH に demucs を入れるか、環境変数 LIVEBIN_DEMUCS で場所を指定してください)")
+		return Stems{}, errors.New("Demucs が見つかりません(PATH に demucs を入れるか、環境変数 TOTTEMOLIVE_DEMUCS で場所を指定してください)")
 	}
 
 	tmp := final + ".tmp"

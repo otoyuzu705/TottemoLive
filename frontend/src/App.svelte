@@ -33,7 +33,7 @@
 
 <div class="app">
   <header>
-    <strong class="brand">livebin</strong>
+    <strong class="brand">TottemoLive</strong>
     <button onclick={() => app.newProject()}>新規</button>
     <button onclick={() => app.openProject()}>開く…</button>
     <button onclick={() => app.saveProject()}>保存</button>

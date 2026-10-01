@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"livebin/internal/audio"
-	"livebin/internal/project"
+	"tottemolive/internal/audio"
+	"tottemolive/internal/project"
 )
 
 // テスト用の音源(3秒のモノラル。複数の周波数のバースト)をffmpegで作る。

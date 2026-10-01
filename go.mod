@@ -1,4 +1,4 @@
-module livebin
+module tottemolive
 
 go 1.25.0
 

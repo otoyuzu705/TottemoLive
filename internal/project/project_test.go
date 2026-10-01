@@ -8,8 +8,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"livebin/internal/params"
-	"livebin/internal/project"
+	"tottemolive/internal/params"
+	"tottemolive/internal/project"
 )
 
 // 表のすべてのPathがProjectのフィールドに解決でき、既定値が範囲内であること。

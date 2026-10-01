@@ -4,7 +4,7 @@ import (
 	"math"
 	"sync"
 
-	"livebin/internal/dsp"
+	"tottemolive/internal/dsp"
 )
 
 // 合成HRIR(球形の頭部モデル)。実測HRIRを同梱できるまでの既定セットで、ライセンスの問題がない。
