@@ -145,7 +145,7 @@ type ParamSpec struct {
 
 - 会場プリセット: 会場IR、部屋の寸法、スピーカーの既定位置、残響パラメーターの既定値を持つ。会場を切り替えると`venue.speakers`と`reverb.*`をプリセットの値で上書きし、リスナー位置を部屋の範囲内に収める
 - 音作りプリセット: `pa` `spatial` `reverb` `output`の全パラメーターと、`crowd`のうち表にある4つを名前を付けて保存したもの。素材・座席・タイムラインは含めないので、別の曲にそのまま適用できる
-- 音作りプリセットの保存先は`os.UserConfigDir()`以下の`livebin/presets/*.json`。出荷時のプリセットは`assets/`に同梱し、読み取り専用として一覧に混ぜる
+- 音作りプリセットの保存先は`os.UserConfigDir()`以下の`livebin/presets/*.json`。出荷時のプリセットは`assets/presets/`に同梱し、読み取り専用として一覧の先頭に混ぜる。出荷時と同名のユーザープリセットは作れない。読み込み時は欠けた項目を既定値で補い、範囲に丸める
 
 ### 聴きながら調整するためのプレビュー
 
@@ -154,6 +154,9 @@ type ParamSpec struct {
 - プレビューの処理内容は書き出しと同じにし、範囲を区間に限るだけにする。品質を落とした軽量版は作らない(プレビューで決めた音が書き出しで変わるのを避けるため)
 - 段ごとのキャッシュ: renderは区間プレビューの各段の出力をメモリに保持する。各段は「自分が読むパラメーターの値」と「上流の段のキー」からキャッシュキーを作り、キーが変わった段から下流だけを計算し直す。たとえば`reverb.mix`を動かしたときはミックスとマスターだけ、`pa.*`を動かしたときは楽曲系統の全段をやり直す(客席系統は再利用)
 - 残響の立ち上がりを書き出しと合わせるため、区間の手前を会場IRの長さぶん余分に処理して捨てる
+- 手前の余分は「残響パラメーターを範囲の上限まで振っても収まる会場IRの長さ」で固定する(残響パラメーターを動かしてもデコード・PAのキャッシュが生きるように)
+- キャッシュは段(スロット)ごとに最新の1件だけ保持する。段は decode:音源 / pa:音源 / direct / reverb / crowd で、ミックスとマスターは毎回計算する。各段が読むパラメーターは`internal/render/render.go`の各段の関数に書いてあり、テスト(`preview_test.go`)で「どのパラメーターがどの段を無効にするか」を固定している
+- 客席系統は曲頭からの絶対時刻で生成する(歓声ノイズも位置から決まる乱数)ので、区間だけの処理が全体処理の同じ区間と一致する
 - ラウドネス調整は曲全体の測定値が要る。プレビューでは区間だけを測って合わせるので、書き出しと音量が少しずれることがある。音量の最終確認は書き出したファイルで行う
 - 新しいプレビューが届いたら、フロントは再生位置とループ状態を保ったまま音源を差し替える
 - 古いパラメーターでのレンダリングが進行中に次の変更が来たら、進行中のジョブをキャンセルして最新の値でやり直す
@@ -200,6 +203,8 @@ livebin/
 | メソッド | 役割 |
 | --- | --- |
 | `OpenAudioFiles() ([]SourceInfo, error)` | ネイティブのファイル選択、長さ・サンプルレート取得 |
+| `AddAudioFiles(paths []string) ([]SourceInfo, error)` | パス指定で取り込む(ドラッグ&ドロップ用)。読めないファイルがあっても他は取り込み、エラーにまとめて返す |
+| `ChooseProjectToOpen()` / `ChooseProjectSavePath()` / `ChooseExportPath() (string, error)` | ネイティブのファイル選択・保存ダイアログ。キャンセルは空文字 |
 | `GetPeaks(sourceID string, width int) ([]float32, error)` | 波形表示用のmin/maxピーク列 |
 | `NewProject() Project` | 全パラメーターが既定値のプロジェクトを返す |
 | `LoadProject(path string) (Project, error)` / `SaveProject(path string, p Project) error` | プロジェクトの読み書き |
@@ -209,7 +214,8 @@ livebin/
 | `ListSoundPresets() []SoundPresetInfo` | 音作りプリセット一覧(出荷時 + ユーザー保存) |
 | `ApplySoundPreset(p Project, name string) (Project, error)` | プリセットの値を反映したProjectを返す |
 | `SaveSoundPreset(name string, p Project) error` / `DeleteSoundPreset(name string) error` | ユーザープリセットの保存と削除 |
-| `RenderPreview(p Project, startSec, lenSec float64) (string, error)` | 指定区間を書き出しと同じ処理でレンダリングし、プレビューURLを返す。段ごとのキャッシュを使う |
+| `RenderPreview(p Project, startSec, lenSec float64) (string, error)` | 指定区間を書き出しと同じ処理でレンダリングし、プレビューURLを返す。段ごとのキャッシュを使う。新しい要求が来ると進行中のプレビューは中断され、中断された呼び出しは空文字とnilを返す(フロントは無視する) |
+| `RenderOriginal(p Project, startSec, lenSec float64) (string, error)` | 同じ区間の原音(ゲインを掛けて足しただけ)のURL。A/B比較用で、ラウドネスはマスターを通して目標にそろえる |
 | `StartExport(p Project, outPath string) (string, error)` | 書き出しジョブを開始し、ジョブIDを返す |
 | `CancelJob(jobID string)` | ジョブの中断 |
 
@@ -222,8 +228,9 @@ livebin/
 **プレビュー音声の受け渡し**
 
 - 生PCMをバインディングで返すとJSONが巨大になるので使わない
-- Go側でレンダリングしたWAVをメモリに保持し、AssetServerの`Handler`で`/preview/{id}.wav`として配信する
-- フロントは`<audio>`で再生する。Rangeリクエストに対応させてシークできるようにする
+- Go側でレンダリングしたWAV(16bit、ディザ付き。再生専用)をメモリに保持し、AssetServerの`Handler`で`/preview/{id}.wav`として配信する。保持は最新4件
+- フロントは`<audio>`で再生する。Rangeリクエストに対応させてシークできるようにする。ただしWebViewのRange対応に依存しないよう、フロントは一度`fetch`してblob URLにして再生する
+- 開発時(`wails dev`)はViteのindex.htmlフォールバックに取られないよう、`vite.config.ts`のプラグインで`/preview/`を404にしてGo側のハンドラへ回す
 - 波形もピーク列だけを返し、描画はフロントのcanvasで行う
 
 ## フロントエンドUI設計

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 現状
 
-M1(エンジンとCLI)まで実装済み。M2以降(Wails骨格・フロント)は未着手で、`main.go` `app.go` `frontend/` `wails.json` はまだない。実装は設計書 `livebin-design.md` に従う。設計と違う実装をする場合は、設計書も同じ変更で更新する。
+M1(エンジンとCLI)とM2(Wails骨格・音作りパネル・区間プレビュー・A/B・書き出し)まで実装済み。M3(会場マップのドラッグ)以降は未着手(会場マップは表示のみ)。実装は設計書 `livebin-design.md` に従う。設計と違う実装をする場合は、設計書も同じ変更で更新する。
 
 作るもの: 楽曲音源を「指定した会場・座席で聴いているような」バイノーラル音源に変換して書き出すデスクトップアプリ(アプリ名・Goモジュール名は `livebin`)。Go + Wails v2、フロントは Svelte + TypeScript。
 
@@ -18,8 +18,9 @@ go run ./cmd/livebin-cli render project.json -o out.wav --set pa.lowCutHz=80  # 
 go run ./cmd/livebin-cli params     # 音作りパラメーターの一覧
 go test ./internal/...              # DSPエンジンのテスト(ffmpegがなければrenderのE2Eはスキップ)
 go test ./internal/dsp -run TestXxx # 単一テスト
-wails dev                           # GUIの開発起動(Node.js必須。M2で雛形を作ってから)
-wails build                         # 配布ビルド(同上)
+wails dev                           # GUIの開発起動(Node.js必須)。ブラウザからは http://localhost:34115
+wails build                         # 配布ビルド(build/bin/livebin.exe)
+cd frontend && npx svelte-check   # フロントの型チェック
 ```
 
 実行時に `ffmpeg` / `ffprobe` がPATH上に必要(デコード・エンコードを子プロセスで行うため。環境変数 `LIVEBIN_FFMPEG` `LIVEBIN_FFPROBE` で場所を指定可)。Demucsは任意機能。
@@ -28,7 +29,7 @@ wails build                         # 配布ビルド(同上)
 
 M1ではエンジンをCLIで通すところまで(処理の正しさの確認)。音質の追い込みはM2で、UIの音作りパネルと区間プレビューを使って行う。CLIで音質を詰めようとしない。
 
-M1 エンジンとCLI → M2 Wails骨格と音作りパネル・プレビュー → M3 会場マップ → M4 客席タイムライン → M5 ステム分離連携
+M1 エンジンとCLI(済) → M2 Wails骨格と音作りパネル・プレビュー(済。音質の追い込みはこれから) → M3 会場マップ → M4 客席タイムライン → M5 ステム分離連携
 
 初版の対象外: リアルタイム処理、ヘッドトラッキング、動画との合成。
 
@@ -76,7 +77,7 @@ M1 エンジンとCLI → M2 Wails骨格と音作りパネル・プレビュー 
 - 生PCMや大きな配列をバインディングの戻り値で返さない(JSONが巨大になる)。プレビューはGo側でWAVをメモリに保持し、AssetServerの `Handler` で `/preview/{id}.wav` として配信、フロントは `<audio>` で再生する。シークのためRangeリクエスト対応が必須
 - 波形はmin/maxピーク列だけを返し、描画はフロントのcanvas
 - 進捗は `runtime.EventsEmit` で通知: `render:progress`(`{jobId, stage, ratio}`、stageは decode / process / encode)、`render:done`、`render:error`
-- TS側の型は手書きせず、Wailsのバインディング生成に任せる(Goの構造体が正)
+- TS側の型は手書きせず、Wailsのバインディング生成に任せる(Goの構造体が正)。`frontend/wailsjs` は生成物だがコミットする。Goの公開メソッドや構造体を変えたら `wails generate module`(`wails dev`/`wails build` でも自動)で再生成すること
 - `App` の公開メソッド一覧は設計書の「Wails連携」節を参照
 
 **データモデル**
