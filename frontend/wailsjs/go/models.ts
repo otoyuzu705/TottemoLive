@@ -202,6 +202,10 @@ export namespace project {
 	    preDelayMs: number;
 	    decayScale: number;
 	    highDampHz: number;
+	    lowCoherence: number;
+	    lowDecayScale: number;
+	    lowLevelDb: number;
+	    lowCrossoverHz: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Reverb(source);
@@ -213,6 +217,10 @@ export namespace project {
 	        this.preDelayMs = source["preDelayMs"];
 	        this.decayScale = source["decayScale"];
 	        this.highDampHz = source["highDampHz"];
+	        this.lowCoherence = source["lowCoherence"];
+	        this.lowDecayScale = source["lowDecayScale"];
+	        this.lowLevelDb = source["lowLevelDb"];
+	        this.lowCrossoverHz = source["lowCrossoverHz"];
 	    }
 	}
 	export class Spatial {
