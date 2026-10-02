@@ -47,7 +47,7 @@ func advanced(s ParamSpec) ParamSpec { s.Advanced = true; return s }
 var specs = []ParamSpec{
 	logScale(f("pa.lowCutHz", "低域カット", "pa", "Hz", 20, 200, 1, 35)),
 	logScale(f("pa.highShelfHz", "高域シェルフ周波数", "pa", "Hz", 2000, 12000, 100, 6000)),
-	f("pa.highShelfDb", "高域シェルフ量", "pa", "dB", -12, 0, 0.5, -3),
+	f("pa.highShelfDb", "高域シェルフ量", "pa", "dB", -12, 6, 0.5, -3),
 	f("pa.compThresholdDb", "コンプ スレッショルド", "pa", "dB", -40, 0, 0.5, -18),
 	f("pa.compRatio", "コンプ レシオ", "pa", "", 1, 10, 0.1, 3),
 	advanced(logScale(f("pa.compAttackMs", "コンプ アタック", "pa", "ms", 1, 100, 1, 10))),

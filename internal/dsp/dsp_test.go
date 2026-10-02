@@ -142,6 +142,21 @@ func TestHighShelfGain(t *testing.T) {
 	}
 }
 
+// シェルフは持ち上げる側(+6 dB)でも、高域だけが上がり低域は変わらない。
+func TestHighShelfBoost(t *testing.T) {
+	const sr = 48000
+	hi, lo := sine(12000, 0.2, sr, sr), sine(100, 0.2, sr, sr)
+	HighShelf(sr, 4000, 6).Process(hi)
+	HighShelf(sr, 4000, 6).Process(lo)
+	rel := func(x []float32) float64 { return LinToDb(rms(x[sr/2:]) / (0.2 / math.Sqrt2)) }
+	if got := rel(hi); math.Abs(got-6) > 0.5 {
+		t.Errorf("high band raised by %.2f dB, want 6", got)
+	}
+	if got := rel(lo); math.Abs(got) > 0.2 {
+		t.Errorf("low band moved by %.2f dB", got)
+	}
+}
+
 func TestCompressReducesLoudPart(t *testing.T) {
 	const sr = 48000
 	x := sine(1000, 0.9, sr, sr)
