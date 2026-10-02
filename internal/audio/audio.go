@@ -15,6 +15,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"tottemolive/internal/procutil"
 )
@@ -42,8 +44,44 @@ type Info struct {
 	Channels    int     `json:"channels"`
 }
 
-// Probe はffprobeで長さ・サンプルレート・チャンネル数を取得する。
+// probeCache は Probe の結果を、ファイルの同一性(パス・サイズ・更新時刻)ごとに保存する。
+// ffprobe の起動は、デコードのたびに走ると遅く、コンソール窓の件でも不利なので、1ファイル1回にする。
+var (
+	probeMu    sync.Mutex
+	probeCache = map[string]Info{}
+	probeRuns  atomic.Int64 // ffprobe を実際に起動した回数(テスト用)
+)
+
+func probeKey(path string) (string, bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
+	return fmt.Sprintf("%s|%d|%d", path, fi.Size(), fi.ModTime().UnixNano()), true
+}
+
+// Probe はffprobeで長さ・サンプルレート・チャンネル数を取得する。同じファイル(中身が同じ)は結果を再利用する。
 func Probe(ctx context.Context, path string) (Info, error) {
+	key, ok := probeKey(path)
+	if ok {
+		probeMu.Lock()
+		info, hit := probeCache[key]
+		probeMu.Unlock()
+		if hit {
+			return info, nil
+		}
+	}
+	info, err := runProbe(ctx, path)
+	if err == nil && ok {
+		probeMu.Lock()
+		probeCache[key] = info
+		probeMu.Unlock()
+	}
+	return info, err
+}
+
+func runProbe(ctx context.Context, path string) (Info, error) {
+	probeRuns.Add(1)
 	cmd := exec.CommandContext(ctx, bin("TOTTEMOLIVE_FFPROBE", "ffprobe"),
 		"-v", "error", "-select_streams", "a:0",
 		"-show_entries", "stream=sample_rate,channels:format=duration",
