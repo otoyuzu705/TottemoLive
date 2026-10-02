@@ -20,6 +20,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"tottemolive/internal/procutil"
 )
 
 const model = "htdemucs"
@@ -80,6 +82,7 @@ func Separate(ctx context.Context, path, cacheDir string, progress func(ratio fl
 	}
 
 	cmd := exec.CommandContext(ctx, bin(), "--two-stems=vocals", "-n", model, "-o", tmp, path)
+	procutil.HideConsole(cmd)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return Stems{}, err
