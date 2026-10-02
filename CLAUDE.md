@@ -52,6 +52,7 @@ M1 エンジンとCLI(済) → M2 Wails骨格と音作りパネル・プレビ�
 - Wailsに依存してよいのは `main.go` と `app.go` だけ。`internal/` 以下はWailsをimportしない(同じエンジンを `cmd/tottemolive-cli` から呼ぶため)
 - フロントは表示と操作だけ。デコードから書き出しまではすべてGo側の `internal/render` のジョブが実行する
 - cgoとPythonをGoのビルドに持ち込まない。FFmpegとDemucsは子プロセスで呼ぶ。Go本体の依存はWailsとgonumに絞る
+- 子プロセス(ffmpeg・ffprobe・demucs)は必ず `internal/procutil.HideConsole(cmd)` を通して起動する。GUIのリリースビルドはコンソールを持たないので、通さないと起動のたびにコンソール窓が一瞬出る(`wails dev` では出ないので、開発中に気づけない)。確認は `internal/procutil/testdata/windowcheck`。ffprobeの結果は `audio.Probe` がファイルごとに保存する
 
 **信号処理**
 
