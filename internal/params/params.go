@@ -74,6 +74,8 @@ var specs = []ParamSpec{
 	f("reverb.preDelayMs", "プリディレイ", "reverb", "ms", 0, 150, 1, 40),
 	f("reverb.decayScale", "残響の長さ", "reverb", "倍", 0.5, 1.2, 0.01, 1.0),
 	logScale(f("reverb.highDampHz", "残響の高域ダンプ", "reverb", "Hz", 2000, 16000, 100, 8000)),
+	f("reverb.highDecayScale", "高域の残響の長さ", "reverb", "倍", 0.2, 1, 0.05, 0.6),
+	advanced(logScale(f("reverb.highDecayHz", "高域の残響の境界周波数", "reverb", "Hz", 2000, 12000, 100, 4000))),
 	f("reverb.lowCoherence", "低域の左右の相関", "reverb", "", 0, 1, 0.05, 1),
 	f("reverb.lowDecayScale", "低域の残響の長さ", "reverb", "倍", 0.5, 2.5, 0.05, 1.3),
 	f("reverb.lowLevelDb", "低域の残響レベル", "reverb", "dB", -12, 12, 0.5, 3),

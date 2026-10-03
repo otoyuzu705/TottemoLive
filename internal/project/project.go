@@ -96,6 +96,10 @@ type Reverb struct {
 	LowDecayScale  float64 `json:"lowDecayScale"`
 	LowLevelDb     float64 `json:"lowLevelDb"`
 	LowCrossoverHz float64 `json:"lowCrossoverHz"`
+	// 高域の残響。HighDecayHz 以上の帯域は、残響の長さが HighDecayScale 倍(1以下)になる。
+	// 実際の会場は、空気や壁・客席の吸収で、高域ほど早く減衰する。
+	HighDecayScale float64 `json:"highDecayScale"`
+	HighDecayHz    float64 `json:"highDecayHz"`
 }
 
 type Keyframe struct {

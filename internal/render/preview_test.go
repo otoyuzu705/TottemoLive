@@ -38,6 +38,8 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 		{"pa.lowCutHz", func(p *project.Project) { p.PA.LowCutHz = 120 }, []string{"pa:0", "paSpectrum", "direct", "reverb"}},
 		{"source gain", func(p *project.Project) { p.Sources[0].GainDb = -3 }, []string{"inputLevel", "pa:0", "paSpectrum", "direct", "reverb"}},
 		{"reverb.decayScale", func(p *project.Project) { p.Reverb.DecayScale = 0.6 }, []string{"reverb"}},
+		{"reverb.highDecayScale", func(p *project.Project) { p.Reverb.HighDecayScale = 0.3 }, []string{"reverb"}},
+		{"reverb.highDecayHz", func(p *project.Project) { p.Reverb.HighDecayHz = 8000 }, []string{"reverb"}},
 		{"reverb.lowCoherence", func(p *project.Project) { p.Reverb.LowCoherence = 0.2 }, []string{"reverb"}},
 		{"reverb.lowDecayScale", func(p *project.Project) { p.Reverb.LowDecayScale = 2 }, []string{"reverb"}},
 		{"reverb.lowLevelDb", func(p *project.Project) { p.Reverb.LowLevelDb = 9 }, []string{"reverb"}},

@@ -236,6 +236,8 @@ export namespace project {
 	    lowDecayScale: number;
 	    lowLevelDb: number;
 	    lowCrossoverHz: number;
+	    highDecayScale: number;
+	    highDecayHz: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Reverb(source);
@@ -251,6 +253,8 @@ export namespace project {
 	        this.lowDecayScale = source["lowDecayScale"];
 	        this.lowLevelDb = source["lowLevelDb"];
 	        this.lowCrossoverHz = source["lowCrossoverHz"];
+	        this.highDecayScale = source["highDecayScale"];
+	        this.highDecayHz = source["highDecayHz"];
 	    }
 	}
 	export class Spatial {

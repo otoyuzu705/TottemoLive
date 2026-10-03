@@ -83,13 +83,18 @@ func TestBuildIR(t *testing.T) {
 	if len(BuildIR(pr, r2, sr)[0]) <= len(ir[0]) {
 		t.Error("decayScale should lengthen IR")
 	}
-	// 左右は無相関
+	// 左右の相関: 低域は自然な拡散音場に合わせて相関が高い(全体の相関にも少し出る)が、中高域は無相関のまま
 	dot := 0.0
 	for i := range ir[0] {
 		dot += float64(ir[0][i]) * float64(ir[1][i])
 	}
-	if math.Abs(dot/e) > 0.05 {
-		t.Errorf("L/R correlated: %v", dot/e)
+	if math.Abs(dot/e) > 0.12 {
+		t.Errorf("L/R correlated overall: %v", dot/e)
+	}
+	for _, fc := range []float64{2000, 4000} {
+		if c := bandCorr(ir, fc); math.Abs(c) > 0.08 {
+			t.Errorf("L/R correlated at %v Hz: %.2f", fc, c)
+		}
 	}
 	// 決定的
 	if !reflect.DeepEqual(ir, BuildIR(pr, r, sr)) {
@@ -280,5 +285,72 @@ func TestCriticalDistance(t *testing.T) {
 		if pr.Reverb.Mix != NominalMix {
 			t.Errorf("%s: mix %v, want the nominal %v", pr.ID, pr.Reverb.Mix, NominalMix)
 		}
+	}
+}
+
+// 高域は中域より早く減衰する: 境界(highDecayHz)の2倍より上の残響時間は中域の highDecayScale 倍、
+// 境界より下の中域・低域の残響時間は変わらず、残響時間は周波数とともに短くなる(増えない)。
+// 境界のすぐ上は、帯域を分けるフィルタの肩から漏れる中域の遅い成分が、シュレーダー積分の後期の減衰を支配するので、
+// 目標の曲線より少し長く測定される。そのため、境界の2倍より上で目標との一致を確かめる。
+func TestBuildIRHighDecay(t *testing.T) {
+	pr, _ := Get("hall")
+	for _, scale := range []float64{1, 0.6, 0.3} {
+		r := pr.Reverb
+		r.HighDecayScale = scale
+		r.LowDecayScale = 1  // 低域は中域と同じ長さにして、高域だけを見る
+		r.HighDampHz = 16000 // 静的な高域ダンプは、残響時間の測定の邪魔にならないよう最大にする
+		ir := BuildIR(pr, r, 48000)
+		mid := bandRT(ir[0], 1000)
+		if math.Abs(mid-pr.RT60Sec)/pr.RT60Sec > 0.1 {
+			t.Errorf("scale %v: mid RT %.2f, want ~%.2f", scale, mid, pr.RT60Sec)
+		}
+		for _, fc := range []float64{12000, 16000} { // 境界(4 kHz)の2倍より上
+			if got := bandRT(ir[0], fc) / mid; math.Abs(got-scale) > 0.2*scale+0.05 {
+				t.Errorf("scale %v: %v Hz RT / mid RT = %.2f", scale, fc, got)
+			}
+		}
+		for _, fc := range []float64{125, 500, 2000} { // 境界より下は変わらない
+			if got := bandRT(ir[0], fc) / mid; math.Abs(got-1) > 0.12 {
+				t.Errorf("scale %v: %v Hz RT ratio %.2f should stay 1", scale, fc, got)
+			}
+		}
+		prev := 2.0
+		for _, fc := range []float64{2000, 4000, 6000, 8000, 12000, 16000} {
+			got := bandRT(ir[0], fc) / mid
+			if got > prev+0.08 {
+				t.Errorf("scale %v: RT must not grow with frequency (%v Hz: %.2f after %.2f)", scale, fc, got, prev)
+			}
+			prev = got
+		}
+	}
+}
+
+// 高域の減衰を変えても、残響の中域のレベルは変わらない(中域で正規化)。高域のエネルギーは長さに応じて変わる(短いほど小さい)。
+// 境界周波数を上げると、その分だけ高域が短くなり始める周波数が上がる。
+func TestBuildIRHighDecayKeepsMidAndRespectsBoundary(t *testing.T) {
+	pr, _ := Get("arena")
+	base := pr.Reverb
+	base.HighDecayScale = 1
+	short := base
+	short.HighDecayScale = 0.4
+	a, b := BuildIR(pr, base, 48000), BuildIR(pr, short, 48000)
+	if d := 10 * math.Log10(midBandEnergy(b, 48000)/midBandEnergy(a, 48000)); math.Abs(d) > 0.05 {
+		t.Errorf("mid band moved by %.2f dB", d)
+	}
+	if d := bandEnergyDb(b[0], 10000) - bandEnergyDb(a[0], 10000); d > -2 {
+		t.Errorf("shorter high decay should lower the 10 kHz energy, moved %.1f dB", d)
+	}
+	// 境界が2 kHzなら 5 kHz帯は(境界の2倍=4 kHzより上なので)短く、境界が8 kHzなら 5 kHz帯は中域のまま
+	hi, lo := short, short
+	hi.HighDecayHz, lo.HighDecayHz = 8000, 2000
+	rtHi, rtLo := bandRT(BuildIR(pr, hi, 48000)[0], 5000), bandRT(BuildIR(pr, lo, 48000)[0], 5000)
+	if rtHi <= rtLo*1.3 {
+		t.Errorf("5 kHz band: RT %.2f s with boundary 8 kHz vs %.2f s with boundary 2 kHz (should be clearly longer)", rtHi, rtLo)
+	}
+	// 1を超える指定は1に丸める(IRの長さは変わらない)
+	over := base
+	over.HighDecayScale = 3
+	if len(BuildIR(pr, over, 48000)[0]) != len(a[0]) {
+		t.Error("a scale above 1 must not lengthen the IR")
 	}
 }
