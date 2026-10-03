@@ -121,3 +121,17 @@ func TestMonoAndMeanSquare(t *testing.T) {
 		t.Error("empty mean square")
 	}
 }
+
+func TestBytes(t *testing.T) {
+	s := &Series{Data: []float32{1.5, -90, 0.25}}
+	b := s.Bytes()
+	if len(b) != 12 {
+		t.Fatalf("len %d", len(b))
+	}
+	for i, want := range s.Data {
+		got := math.Float32frombits(uint32(b[4*i]) | uint32(b[4*i+1])<<8 | uint32(b[4*i+2])<<16 | uint32(b[4*i+3])<<24)
+		if got != want {
+			t.Errorf("[%d] %v want %v", i, got, want)
+		}
+	}
+}

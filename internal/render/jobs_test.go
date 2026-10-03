@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -95,5 +96,43 @@ func TestStoreServesWithRange(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != 404 {
 		t.Error("old preview should be evicted")
+	}
+}
+
+func TestStoreServesBands(t *testing.T) {
+	s := NewStore(2)
+	wavPath, bandsPath := s.PutWithBands([]byte("wavdata"), []byte{1, 2, 3, 4})
+	if bandsPath == "" {
+		t.Fatal("no bands path")
+	}
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+	get := func(path string) (int, string, []byte) {
+		res, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return res.StatusCode, res.Header.Get("Content-Type"), b
+	}
+	if code, typ, body := get(bandsPath); code != 200 || typ != "application/octet-stream" || len(body) != 4 || body[3] != 4 {
+		t.Errorf("bands: %d %q %v", code, typ, body)
+	}
+	if code, typ, body := get(wavPath); code != 200 || typ != "audio/wav" || string(body) != "wavdata" {
+		t.Errorf("wav: %d %q %q", code, typ, body)
+	}
+	// 帯域のバイナリが無いエントリは .bands が 404、WAVは配信できる
+	onlyWav := s.Put([]byte("x"))
+	if code, _, _ := get(strings.Replace(onlyWav, ".wav", ".bands", 1)); code != 404 {
+		t.Errorf("missing bands should be 404, got %d", code)
+	}
+	if code, _, _ := get(onlyWav); code != 200 {
+		t.Errorf("wav only entry: %d", code)
+	}
+	// 古いものから捨てる(帯域のバイナリも一緒に)
+	s.Put([]byte("y"))
+	if code, _, _ := get(bandsPath); code != 404 {
+		t.Errorf("evicted bands should be 404, got %d", code)
 	}
 }

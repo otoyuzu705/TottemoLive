@@ -7,6 +7,7 @@ package analysis
 
 import (
 	"context"
+	"encoding/binary"
 	"math"
 	"runtime"
 	"sync"
@@ -155,4 +156,14 @@ func Mono(l, r []float32) []float32 {
 		out[i] = (l[i] + r[i]) / 2
 	}
 	return out
+}
+
+// Bytes は Data を、リトルエンディアンの float32 の並び(フレーム × 帯域、行優先)にする。
+// フロントは Float32Array としてそのまま読める。
+func (s *Series) Bytes() []byte {
+	b := make([]byte, 4*len(s.Data))
+	for i, v := range s.Data {
+		binary.LittleEndian.PutUint32(b[4*i:], math.Float32bits(v))
+	}
+	return b
 }
