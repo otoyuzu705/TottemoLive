@@ -1,5 +1,27 @@
 export namespace main {
 	
+	export class PreviewResult {
+	    url: string;
+	    bandsUrl: string;
+	    bands: number;
+	    frames: number;
+	    hopSec: number;
+	    offsetDb: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PreviewResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.bandsUrl = source["bandsUrl"];
+	        this.bands = source["bands"];
+	        this.frames = source["frames"];
+	        this.hopSec = source["hopSec"];
+	        this.offsetDb = source["offsetDb"];
+	    }
+	}
 	export class SourceInfo {
 	    id: string;
 	    path: string;
