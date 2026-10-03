@@ -16,7 +16,7 @@
   </div>
 
   {#if !app.proj || app.proj.sources.length === 0}
-    <div class="empty">ここに WAV / FLAC / MP3 をドラッグ&ドロップ<br />(ボーカルと伴奏の2本推奨、2mixも可)</div>
+    <div class="empty">ここに WAV / FLAC / MP3 / M4A をドラッグ&ドロップ<br />(ボーカルと伴奏の2本推奨、2mixも可)</div>
   {:else}
     {#each app.proj.sources as s (s.id)}
       {@const info = app.infos[s.id]}
