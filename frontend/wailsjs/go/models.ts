@@ -173,6 +173,8 @@ export namespace project {
 	}
 	export class PA {
 	    lowCutHz: number;
+	    lowShelfHz: number;
+	    lowShelfDb: number;
 	    highShelfHz: number;
 	    highShelfDb: number;
 	    compThresholdDb: number;
@@ -188,6 +190,8 @@ export namespace project {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.lowCutHz = source["lowCutHz"];
+	        this.lowShelfHz = source["lowShelfHz"];
+	        this.lowShelfDb = source["lowShelfDb"];
 	        this.highShelfHz = source["highShelfHz"];
 	        this.highShelfDb = source["highShelfDb"];
 	        this.compThresholdDb = source["compThresholdDb"];
