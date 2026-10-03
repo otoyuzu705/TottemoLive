@@ -31,6 +31,8 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 		{"spatial.directLevelDb", func(p *project.Project) { p.Spatial.DirectLevelDb = -3 }, nil},
 		{"crowd.levelDb", func(p *project.Project) { p.Crowd.LevelDb = 0 }, nil},
 		{"output.targetLufs", func(p *project.Project) { p.Output.TargetLufs = -18 }, nil},
+		{"pa.lowShelfDb", func(p *project.Project) { p.PA.LowShelfDb = 6 }, []string{"pa:0", "direct", "reverb"}},
+		{"pa.lowShelfHz", func(p *project.Project) { p.PA.LowShelfHz = 200 }, []string{"pa:0", "direct", "reverb"}},
 		{"pa.lowCutHz", func(p *project.Project) { p.PA.LowCutHz = 120 }, []string{"pa:0", "direct", "reverb"}},
 		{"source gain", func(p *project.Project) { p.Sources[0].GainDb = -3 }, []string{"pa:0", "direct", "reverb"}},
 		{"reverb.decayScale", func(p *project.Project) { p.Reverb.DecayScale = 0.6 }, []string{"reverb"}},

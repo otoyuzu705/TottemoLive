@@ -157,6 +157,38 @@ func TestHighShelfBoost(t *testing.T) {
 	}
 }
 
+// 低域シェルフは、上げる側・下げる側とも、低域だけが動き高域は変わらない。
+func TestLowShelf(t *testing.T) {
+	const sr = 48000
+	for _, db := range []float64{-12, -6, 6, 9} {
+		lo, hi := sine(30, 0.2, 2*sr, sr), sine(8000, 0.2, 2*sr, sr)
+		LowShelf(sr, 200, db).Process(lo)
+		LowShelf(sr, 200, db).Process(hi)
+		rel := func(x []float32) float64 { return LinToDb(rms(x[sr:]) / (0.2 / math.Sqrt2)) }
+		if got := rel(lo); math.Abs(got-db) > 0.5 {
+			t.Errorf("%+v dB shelf: 30 Hz moved by %.2f dB", db, got)
+		}
+		if got := rel(hi); math.Abs(got) > 0.2 {
+			t.Errorf("%+v dB shelf: 8 kHz moved by %.2f dB", db, got)
+		}
+	}
+	// 0 dB は何もしない
+	x := sine(100, 0.5, 2000, sr)
+	y := append([]float32(nil), x...)
+	LowShelf(sr, 200, 0).Process(y)
+	for i := range x {
+		if math.Abs(float64(x[i]-y[i])) > 1e-6 {
+			t.Fatal("0 dB shelf changed the signal")
+		}
+	}
+	// カットオフ付近では、ゲインのほぼ半分(シェルフの中点)
+	mid := sine(200, 0.2, 2*sr, sr)
+	LowShelf(sr, 200, 6).Process(mid)
+	if got := LinToDb(rms(mid[sr:]) / (0.2 / math.Sqrt2)); math.Abs(got-3) > 0.6 {
+		t.Errorf("midpoint gain %.2f dB, want ~3", got)
+	}
+}
+
 func TestCompressReducesLoudPart(t *testing.T) {
 	const sr = 48000
 	x := sine(1000, 0.9, sr, sr)

@@ -289,7 +289,7 @@ func sumBus(bufs [][][]float32) [][]float32 {
 	return bus
 }
 
-// applyPA は音源にゲインを掛けてPA質感(低域カット → 高域シェルフ → コンプ → 歪み)を付ける。
+// applyPA は音源にゲインを掛けてPA質感(低域カット → 低域シェルフ → 高域シェルフ → コンプ → 歪み)を付ける。
 func applyPA(buf [][]float32, sr int, gainDb float64, pa project.PA) {
 	g := float32(dsp.DbToLin(gainDb))
 	for _, ch := range buf {
@@ -297,6 +297,7 @@ func applyPA(buf [][]float32, sr int, gainDb float64, pa project.PA) {
 			ch[i] *= g
 		}
 		dsp.HighPass(float64(sr), pa.LowCutHz).Process(ch)
+		dsp.LowShelf(float64(sr), pa.LowShelfHz, pa.LowShelfDb).Process(ch)
 		dsp.HighShelf(float64(sr), pa.HighShelfHz, pa.HighShelfDb).Process(ch)
 	}
 	dsp.Compress(buf, sr, dsp.CompParams{
