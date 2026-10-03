@@ -137,6 +137,31 @@ func IRSeconds(pr Preset, r project.Reverb) float64 {
 	return pr.RT60Sec*r.DecayScale*math.Max(1, r.LowDecayScale)*irTailMargin + r.PreDelayMs*1e-3
 }
 
+// IRの正規化に使う中域の範囲(Hz)。高域ダンプ(2 kHz以上)と低域の残響(境界250 Hz以下)の影響を受けにくい帯域。
+const (
+	normBandLoHz = 600
+	normBandHiHz = 1400
+)
+
+// midBandEnergy は、左右のIRの中域(normBandLoHz〜normBandHiHz)のエネルギーの合計。
+func midBandEnergy(ir [][]float32, fs float64) float64 {
+	total := 0.0
+	for _, ch := range ir {
+		x := append([]float32(nil), ch...)
+		dsp.LR4HighPass(x, fs, normBandLoHz)
+		dsp.LR4LowPass(x, fs, normBandHiHz)
+		for _, v := range x {
+			total += float64(v) * float64(v)
+		}
+	}
+	return total
+}
+
+// normBandTarget は、チャンネルあたりのエネルギー1の白色IRが、中域に持つエネルギー(帯域幅 / ナイキスト周波数)。
+func normBandTarget(fs float64) float64 {
+	return (normBandHiHz - normBandLoHz) / (fs / 2)
+}
+
 // BuildIR は会場IR(左右)を作る。r.DecayScale で残響の長さ、r.HighDampHz で高域ダンプ、
 // r.PreDelayMs でプリディレイを決める。
 //
@@ -148,7 +173,8 @@ func IRSeconds(pr Preset, r project.Reverb) float64 {
 //   - 残響の長さ r.LowDecayScale: 実際の会場は低域ほど長く残る
 //   - レベル r.LowLevelDb
 //
-// 左右合計のエネルギーを1にそろえるので、残響の長さを変えても音量は変わらない。
+// 中域のエネルギー密度をそろえる(上のIR正規化の説明を参照)ので、残響の長さ・高域ダンプ・低域の残響を変えても、
+// 残響の中域のレベルは変わらない。
 func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
 	rtMain := pr.RT60Sec * r.DecayScale
 	rtLow := rtMain * r.LowDecayScale
@@ -180,7 +206,6 @@ func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
 
 	gLow := dsp.DbToLin(r.LowLevelDb)
 	out := make([][]float32, 2)
-	total := 0.0
 	for ch := range out {
 		ir := make([]float32, pre+n)
 		for i := 0; i < n; i++ {
@@ -194,13 +219,14 @@ func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
 			ir[pre+i] = float32(float64(high[ch][i])*envMain + gLow*float64(low[ch][i])*envLow)
 		}
 		dsp.LowPass(fs, r.HighDampHz).Process(ir)
-		for _, v := range ir {
-			total += float64(v) * float64(v)
-		}
 		out[ch] = ir
 	}
-	if total > 0 {
-		g := float32(1 / math.Sqrt(total/2))
+	// 中域(normBandLoHz〜normBandHiHz)のエネルギー密度が、エネルギー1の白色IRと同じになるようにそろえる。
+	// 全体のエネルギーでそろえると、高域ダンプで高域を削るほど中域が持ち上がり、低域のレベルを上げるほど
+	// 中域が下がってしまう(つまみが直感どおりに効かない)。中域を基準にすれば、高域ダンプ・低域の残響
+	// ・残響の長さは、残響の中域のレベルを変えずに、それぞれの帯域だけを変える
+	if e := midBandEnergy(out, fs) / float64(len(out)); e > 0 {
+		g := float32(math.Sqrt(normBandTarget(fs) / e))
 		for _, ir := range out {
 			for i := range ir {
 				ir[i] *= g

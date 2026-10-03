@@ -60,15 +60,15 @@ func TestBuildIR(t *testing.T) {
 	if len(ir) != 2 || len(ir[0]) != len(ir[1]) {
 		t.Fatal("stereo IR expected")
 	}
-	// 左右合計のエネルギーが1
+	// 中域のエネルギー密度が、白色IR(チャンネルあたりエネルギー1)と同じ
+	if got, want := midBandEnergy(ir, sr)/2, normBandTarget(sr); math.Abs(10*math.Log10(got/want)) > 0.05 {
+		t.Errorf("mid band energy %.4f, want %.4f", got, want)
+	}
 	e := 0.0
 	for _, c := range ir {
 		for _, v := range c {
 			e += float64(v) * float64(v)
 		}
-	}
-	if math.Abs(e/2-1) > 1e-3 {
-		t.Errorf("energy %v", e/2)
 	}
 	// プリディレイぶんは無音
 	pre := int(r.PreDelayMs * 1e-3 * sr)
@@ -199,15 +199,10 @@ func TestBuildIRLowLevel(t *testing.T) {
 	if d := bandEnergyDb(b[0], 2000) - bandEnergyDb(a[0], 2000); math.Abs(d) > 0.5 {
 		t.Errorf("mid band moved by %.1f dB", d)
 	}
+	// 低域のレベルを動かしても、中域の基準は動かない(中域でそろえるため)
 	for _, ir := range [][][]float32{a, b} {
-		e := 0.0
-		for _, ch := range ir {
-			for _, v := range ch {
-				e += float64(v) * float64(v)
-			}
-		}
-		if math.Abs(e/2-1) > 1e-3 {
-			t.Errorf("energy %v", e/2)
+		if got, want := midBandEnergy(ir, 48000)/2, normBandTarget(48000); math.Abs(10*math.Log10(got/want)) > 0.05 {
+			t.Errorf("mid band energy %.4f, want %.4f", got, want)
 		}
 	}
 }
@@ -224,5 +219,33 @@ func TestMaxDistanceCoversTheRoom(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// 高域ダンプ・残響の長さ・低域の長さを変えても、残響の中域のレベルは変わらない。ダンプは高域だけを変える。
+func TestBuildIRNormalizesMidBand(t *testing.T) {
+	pr, _ := Get("arena")
+	base := BuildIR(pr, pr.Reverb, 48000)
+	mid0 := midBandEnergy(base, 48000)
+	hi0 := bandEnergyDb(base[0], 8000)
+	for name, mod := range map[string]func(*project.Reverb){
+		"highDamp 2000":  func(r *project.Reverb) { r.HighDampHz = 2000 },
+		"highDamp 16000": func(r *project.Reverb) { r.HighDampHz = 16000 },
+		"decay 0.5":      func(r *project.Reverb) { r.DecayScale = 0.5 },
+		"low decay 2.5":  func(r *project.Reverb) { r.LowDecayScale = 2.5 },
+		"low level +12":  func(r *project.Reverb) { r.LowLevelDb = 12 },
+	} {
+		r := pr.Reverb
+		mod(&r)
+		ir := BuildIR(pr, r, 48000)
+		if d := 10 * math.Log10(midBandEnergy(ir, 48000)/mid0); math.Abs(d) > 0.05 {
+			t.Errorf("%s: mid band moved by %.2f dB", name, d)
+		}
+	}
+	// ダンプを強めると、高域だけが下がる(中域が持ち上がらない)
+	r := pr.Reverb
+	r.HighDampHz = 2000
+	if d := bandEnergyDb(BuildIR(pr, r, 48000)[0], 8000) - hi0; d > -3 {
+		t.Errorf("8 kHz band should drop with a strong damp, moved %.1f dB", d)
 	}
 }
