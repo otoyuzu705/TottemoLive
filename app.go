@@ -136,7 +136,7 @@ type SourceInfo struct {
 	Channels    int     `json:"channels"`
 }
 
-var audioFilter = runtime.FileFilter{DisplayName: "音声ファイル (*.wav, *.flac, *.mp3)", Pattern: "*.wav;*.flac;*.mp3"}
+var audioFilter = runtime.FileFilter{DisplayName: "音声ファイル (*.wav, *.flac, *.mp3, *.m4a)", Pattern: "*.wav;*.flac;*.mp3;*.m4a"}
 
 // OpenAudioFiles はネイティブのファイル選択を開き、選ばれた音源の長さ・サンプルレートを返す。
 func (a *App) OpenAudioFiles() ([]SourceInfo, error) {

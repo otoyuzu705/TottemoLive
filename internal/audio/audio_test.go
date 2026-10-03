@@ -3,6 +3,7 @@ package audio
 import (
 	"context"
 	"encoding/binary"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -108,5 +109,40 @@ func TestProbeIsCached(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "none.wav")
 	if _, err := Probe(ctx, missing); err == nil {
 		t.Error("missing file accepted")
+	}
+}
+
+// m4a(AAC)も、WAVと同じように読み込める(ffmpegのデコードに任せるので、形式ごとの処理はない)。
+func TestDecodeM4A(t *testing.T) {
+	wav := makeTone(t, 4)
+	m4a := filepath.Join(filepath.Dir(wav), "tone.m4a")
+	if out, err := exec.Command("ffmpeg", "-v", "error", "-y", "-i", wav, "-c:a", "aac", "-b:a", "192k", m4a).CombinedOutput(); err != nil {
+		t.Skipf("ffmpeg がAACをエンコードできないためスキップ: %v %s", err, out)
+	}
+	info, err := Probe(context.Background(), m4a)
+	if err != nil || info.DurationSec < 3.9 || info.DurationSec > 4.2 {
+		t.Fatalf("probe: %+v %v", info, err)
+	}
+	all, err := Decode(context.Background(), m4a, 48000, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// AACのエンコーダの遅延は取り除かれ、長さは元とほぼ同じ。音量もWAVのデコードとほぼ同じ(AACの劣化は小さい)
+	if n := len(all[0]); n < 4*48000-2048 || n > 4*48000+2048 || len(all[1]) != len(all[0]) {
+		t.Errorf("decoded length %d/%d", len(all[0]), len(all[1]))
+	}
+	ref, err := Decode(context.Background(), wav, 48000, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peak := func(x []float32) float64 {
+		m := 0.0
+		for _, v := range x {
+			m = math.Max(m, math.Abs(float64(v)))
+		}
+		return m
+	}
+	if got, want := peak(all[0]), peak(ref[0]); math.Abs(got-want)/want > 0.1 {
+		t.Errorf("peak %v, want about %v", got, want)
 	}
 }
