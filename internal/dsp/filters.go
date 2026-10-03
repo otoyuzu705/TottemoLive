@@ -58,6 +58,23 @@ func HighShelf(fs, f0, gainDb float64) *Biquad {
 	)
 }
 
+// LowShelf は shelf slope S=1 の低域シェルフ(f0 以下を gainDb だけ上げ下げする)。
+func LowShelf(fs, f0, gainDb float64) *Biquad {
+	A := math.Pow(10, gainDb/40)
+	w := 2 * math.Pi * clampFreq(fs, f0) / fs
+	c, s := math.Cos(w), math.Sin(w)
+	alpha := s / 2 * math.Sqrt2 // S=1 のとき (A+1/A)(1/S-1)+2 = 2
+	sq := 2 * math.Sqrt(A) * alpha
+	return newBiquad(
+		A*((A+1)-(A-1)*c+sq),
+		2*A*((A-1)-(A+1)*c),
+		A*((A+1)-(A-1)*c-sq),
+		(A+1)+(A-1)*c+sq,
+		-2*((A-1)+(A+1)*c),
+		(A+1)+(A-1)*c-sq,
+	)
+}
+
 func (b *Biquad) ProcessSample(x float64) float64 {
 	y := b.b0*x + b.z1
 	b.z1 = b.b1*x - b.a1*y + b.z2
