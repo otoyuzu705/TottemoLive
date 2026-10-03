@@ -17,6 +17,14 @@ const passPreviewToGo = (): Plugin => ({
   },
 })
 
+// `wails dev` は、起動後にViteの標準出力のパイプを閉じることがある(再ビルド・バインディング再生成の最中など)。
+// その後にViteがログを書くと EPIPE の未処理エラーでViteごと落ちるので、標準出力・標準エラーの書き込みエラーは無視する
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', (e: NodeJS.ErrnoException) => {
+    if (e.code !== 'EPIPE') throw e
+  })
+}
+
 export default defineConfig({
   plugins: [svelte(), passPreviewToGo()],
 })
