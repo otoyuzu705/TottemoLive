@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { BAND_CENTERS, CALIBRATION_DB, DB_FLOOR, Meter, bandEdges, bandLevels } from './spectrum.ts'
+import { BAND_CENTERS, CALIBRATION_DB, DB_FLOOR, Meter, bandEdges, bandLevels, parseBandSeries, seriesAt } from './spectrum.ts'
 
 const SR = 48000
 
@@ -97,4 +97,50 @@ test('Meter: ピークは保持時間のあいだ動かず、そのあと落ち�
   assert.equal(m.peak[0], -10)
   m.reset()
   assert.equal(m.peak[0], DB_FLOOR)
+})
+
+function makeSeries(frames: number, bands: number, fill: (f: number, i: number) => number, offsetDb = 0) {
+  const data = new Float32Array(frames * bands)
+  for (let f = 0; f < frames; f++) for (let i = 0; i < bands; i++) data[f * bands + i] = fill(f, i)
+  return { hopSec: 0.1, bands, frames, data, offsetDb }
+}
+
+test('seriesAt: フレームの間を dB のまま線形に補間する', () => {
+  const s = makeSeries(3, 2, (f, i) => -20 * f - 10 * i) // フレーム0: [0,-10]、1: [-20,-30]、2: [-40,-50]
+  const out = new Float32Array(2)
+  seriesAt(s, 0, out)
+  assert.deepEqual([...out], [0, -10])
+  seriesAt(s, 0.05, out) // 0 と 1 の中間
+  assert.ok(Math.abs(out[0] - -10) < 1e-5 && Math.abs(out[1] - -20) < 1e-5, `${[...out]}`)
+  seriesAt(s, 0.1, out)
+  assert.deepEqual([...out], [-20, -30])
+  seriesAt(s, 0.25, out) // 最後のフレームの手前(最後のフレームの値に向かう)
+  assert.ok(Math.abs(out[0] - -40) < 1e-5)
+})
+
+test('seriesAt: 曲の外は無音、オフセットを足し、下限は割らない', () => {
+  const s = makeSeries(2, 1, () => -30, 6)
+  const out = new Float32Array(1)
+  seriesAt(s, 0.05, out)
+  assert.ok(Math.abs(out[0] - -24) < 1e-5, `offset: ${out[0]}`)
+  seriesAt(s, -0.5, out)
+  assert.equal(out[0], DB_FLOOR)
+  seriesAt(s, 5, out)
+  assert.equal(out[0], DB_FLOOR)
+  // 無音(下限)にオフセットを足しても無音のまま
+  const silent = makeSeries(2, 1, () => DB_FLOOR, 20)
+  seriesAt(silent, 0.05, out)
+  assert.equal(out[0], DB_FLOOR)
+  // 大きな負のオフセットでも下限を割らない
+  const quiet = makeSeries(2, 1, () => -80, -30)
+  seriesAt(quiet, 0.05, out)
+  assert.equal(out[0], DB_FLOOR)
+})
+
+test('parseBandSeries: バイト数が合うときだけ作る', () => {
+  const buf = new Float32Array([1, 2, 3, 4, 5, 6]).buffer
+  const ok = parseBandSeries(buf, { bands: 3, frames: 2, hopSec: 0.05, offsetDb: -3 })
+  assert.ok(ok && ok.data[5] === 6 && ok.offsetDb === -3)
+  assert.equal(parseBandSeries(buf, { bands: 3, frames: 3, hopSec: 0.05, offsetDb: 0 }), null)
+  assert.equal(parseBandSeries(buf, { bands: 0, frames: 2, hopSec: 0.05, offsetDb: 0 }), null)
 })

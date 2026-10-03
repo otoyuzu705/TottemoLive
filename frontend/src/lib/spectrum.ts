@@ -98,3 +98,43 @@ export class Meter {
     this.hold.fill(0)
   }
 }
+
+/** 処理側(Go)から届いた、PA出力の帯域レベルの時系列(dB、0 dBFS の正弦波 = 0 dB)。 */
+export interface BandSeries {
+  /** フレームの間隔(秒)。フレーム f の中心は f × hopSec 秒 */
+  hopSec: number
+  bands: number
+  frames: number
+  /** フレーム × 帯域の行優先 */
+  data: Float32Array
+  /** PA出力の全体の大きさを、耳に届く出力にそろえる値(dB) */
+  offsetDb: number
+}
+
+/**
+ * 時刻 t(秒)のPA出力の帯域レベルを、前後のフレームの間を dB のまま線形に補間して out に書く。
+ * offsetDb を足す(全体の大きさを耳に届く出力にそろえるため)。曲の外(最後のフレームより後)は無音。
+ */
+export function seriesAt(series: BandSeries, t: number, out: Float32Array): Float32Array {
+  const pos = t / series.hopSec
+  const f0 = Math.floor(pos)
+  if (f0 < 0 || f0 >= series.frames || series.frames === 0) return out.fill(DB_FLOOR)
+  const f1 = Math.min(f0 + 1, series.frames - 1)
+  const frac = pos - f0
+  for (let i = 0; i < series.bands; i++) {
+    const a = series.data[f0 * series.bands + i]
+    const b = series.data[f1 * series.bands + i]
+    const db = a + (b - a) * frac
+    out[i] = db <= DB_FLOOR ? DB_FLOOR : Math.max(DB_FLOOR, db + series.offsetDb)
+  }
+  return out
+}
+
+/** 帯域レベルのバイナリ(リトルエンディアンの float32、フレーム × 帯域)と付随情報から BandSeries を作る。 */
+export function parseBandSeries(
+  buf: ArrayBuffer,
+  info: { bands: number; frames: number; hopSec: number; offsetDb: number },
+): BandSeries | null {
+  if (info.bands <= 0 || info.frames <= 0 || buf.byteLength !== info.bands * info.frames * 4) return null
+  return { ...info, data: new Float32Array(buf) }
+}
