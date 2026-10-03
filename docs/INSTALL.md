@@ -12,7 +12,7 @@ Go、Node.js、Pythonは、配布されたアプリを使うだけなら不要�
 | TottemoLive-macos-amd64.zip | Intel Mac |
 | TottemoLive-macos-arm64.zip | Apple Silicon Mac（M1以降） |
 
-GitHub Releases、またはGitHub Actionsの「Build and Release」の成功した実行のArtifactsから取得します。
+GitHub Releases、またはGitHub Actionsの「Release Build」の成功した実行のArtifactsから取得します。
 Actionsのartifact自体もZIPなので、まず外側を展開し、中のTottemoLive-*.zipも展開してください。
 OSの実際の対応範囲は利用するWailsとGoに依存します。リリース用ワークフローではWindows Server 2022とmacOS 15で検証します。通常CIのLinux成果物はビルド検証用です。
 
@@ -93,7 +93,7 @@ $env:TOTTEMOLIVE_DEMUCS = 'C:\実際の仮想環境\Scripts\demucs.exe'
 
 ## チェックサム
 
-ReleasesにはSHA256SUMS、Actionsのartifactには各ZIPの.zip.sha256を添付します。
+ReleasesにはSHA256SUMS、Actionsのartifactには各ZIPの.zip.sha256と、TottemoLive-release-checksums内のSHA256SUMSを保存します。
 ZIPを展開する前にSHA-256を比較してください。
 
 Windows：

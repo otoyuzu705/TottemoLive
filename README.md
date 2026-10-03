@@ -11,8 +11,8 @@ FFmpeg／ffprobeが必須で、Demucsによるステム分離は任意です。
 | ワークフロー | 自動実行 | 手動実行 | 成果物 |
 | --- | --- | --- | --- |
 | CI（ci.yml） | main／devへのpushとPR | workflow_dispatch | Ubuntuで検証・ビルド。Linux検証用tar.gzとSHA-256 |
-| Build and Release（release.yml） | v*タグのpush | workflow_dispatch | Ubuntuで検証後、Windows／Macの配布ZIPとSHA-256。タグ実行のみ公開 |
-| Release desktop build（build.yml） | リリース用ワークフローから呼び出す | 直接実行せずBuild and Releaseを使用 | Windows／Macの検証・ビルド・ZIP作成 |
+| Release Build（release.yml） | v*タグのpush | workflow_dispatch | Ubuntuで検証後、Windows／Macの配布ZIPとSHA-256。成果物の保存まで |
+| Release desktop build（build.yml） | リリース用ワークフローから呼び出す | 直接実行せずRelease Buildを使用 | Windows／Macの検証・ビルド・ZIP作成 |
 
 通常CIはubuntu-24.04だけで実行します。
 Windows x64、Mac Intel、Mac Apple Siliconのネイティブビルドは、タグまたは手動で起動するリリース用ワークフローに限定します。
@@ -27,36 +27,36 @@ CIにもFFmpeg／ffprobeを導入するため、音声処理のテストを実�
 workflow_dispatchは、ワークフローファイルが既定ブランチに存在する必要があります。
 
 1. GitHubの「Actions」を開きます。
-2. 「CI」または「Build and Release」を選びます。
+2. 「CI」または「Release Build」を選びます。
 3. 「Run workflow」で対象ブランチ／タグを選び、実行します。
 4. 成功した実行の「Artifacts」から成果物をダウンロードします。
-5. Build and Releaseの成果物は、artifactのZIPを展開し、中の対象OSの配布ZIPとチェックサムを取り出します。
+5. Release Buildの成果物は、artifactのZIPを展開し、中の対象OSの配布ZIPとチェックサムを取り出します。
 
 CIの成果物はTottemoLive-ci-linux-amd64です。Ubuntuでのビルド検証用tar.gzで、Windows／Mac向けの配布物ではありません。
 LinuxのGUIビルドにはGTK 3とWebKitGTK 4.1を使用し、Goのテスト・vetとWailsビルドにwebkit2_41タグを付けます。
 
-どちらの手動実行もGitHub Releasesへの公開は行いません。
-手動ビルドのアプリバージョンは選択したリビジョンのwails.jsonの値です。
+タグ・手動実行ともGitHub Releasesの作成・公開は行いません。
+vMAJOR.MINOR.PATCH形式のタグからビルドした場合は、そのタグをアプリの製品バージョンに使用します。
+ブランチからの手動ビルドでは、選択したリビジョンのwails.jsonの値を使用します。
 成果物の保持期間は14日です。
 
-### バージョンタグで公開する
+### ご自身でリリースする
 
-公開対象のコミットに、v1.2.3のような`vMAJOR.MINOR.PATCH`形式のタグを付けてpushします。
-先頭ゼロ、プレリリースやビルドメタデータ付きのタグには対応していません。
+1. 公開対象のコミットに、v1.2.3のような`vMAJOR.MINOR.PATCH`形式のタグを付けてpushします。
+   先頭ゼロ、プレリリースやビルドメタデータ付きのタグには対応していません。
 
-```sh
-git tag v1.2.3
-git push origin v1.2.3
-```
+   ```sh
+   git tag v1.2.3
+   git push origin v1.2.3
+   ```
 
-アプリの製品バージョンをタグの値に合わせ、全対象の検証・ビルドに成功したらGitHub Releasesへ3つのZIPとSHA256SUMSを公開します。
-アップロード中はdraftとし、完了後に公開します。
-ビルド失敗時は公開せず、アップロードまたは公開処理で失敗した場合はdraftが残る可能性があります。
-その場合はActionsのログとdraft内の成果物を確認し、不完全なdraftを削除してpublishジョブを再実行します。
-すでに公開済みの同名リリースは上書きしません。
+2. Release Buildの成功を確認し、Artifactsから各OSの配布ZIPとTottemoLive-release-checksums内のSHA256SUMSをダウンロードします。
+3. GitHubのReleases画面で新しいリリースを作成し、同じタグを選びます。
+4. 3つの配布ZIPとSHA256SUMSを添付し、リリースノートを入力して、ご自身で公開します。
 
-ビルドの権限はcontents: readで、リリース作成ジョブだけcontents: writeを使います。
-GITHUB_TOKENを利用するため、公開用の追加シークレットは不要です。
+CIはビルドと成果物の保存までを担当します。draftの作成や公開も含め、GitHub Releasesの操作は自動化しません。
+ワークフローの権限はcontents: readだけを使用します。
+
 Windowsのコード署名、AppleのDeveloper ID署名・公証、自動更新は含みません。
 
 ## ローカル開発

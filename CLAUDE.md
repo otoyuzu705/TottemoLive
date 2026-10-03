@@ -105,9 +105,9 @@ M1 エンジンとCLI(済) → M2 Wails骨格と音作りパネル・プレビ�
 - devにマージする際はPRを立て自己レビューすること
 ## CI/CD
 
-GitHub Actionsの `CI` と `Build and Release` は、両方とも `workflow_dispatch` で手動実行できる。
+GitHub Actionsの `CI` と `Release Build` は、両方とも `workflow_dispatch` で手動実行できる。
 通常CIは `.github/workflows/ci.yml` でUbuntuだけを使って検証・GUIビルドする。
 Windows x64、Mac Intel、Mac Apple Siliconのネイティブビルドは、リリース用の `.github/workflows/build.yml` に限定する。
 リリース用ワークフローは、まずUbuntuのCIを再利用して実行し、成功後に各OSをビルドする。
-`vMAJOR.MINOR.PATCH` タグのpushだけがGitHub Releasesへの公開を行い、手動実行はartifactの保存まで。
+タグ・手動実行ともビルドとartifact保存まで。タグ付け、GitHub Releasesの作成・添付・公開はユーザーが行う。
 操作と開発環境は `README.md`、配布物の導入とFFmpegの設定は `docs/INSTALL.md` を参照する。
