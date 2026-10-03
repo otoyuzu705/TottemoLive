@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"tottemolive/internal/analysis"
 	"tottemolive/internal/audio"
 	"tottemolive/internal/project"
 )
@@ -117,5 +118,82 @@ func TestSubIsMonoInBothEars(t *testing.T) {
 	l, r := tonePower(res.Audio[0], 60), tonePower(res.Audio[1], 60)
 	if d := math.Abs(10 * math.Log10(l/r)); d > 0.5 {
 		t.Errorf("60 Hz differs between ears by %.2f dB", d)
+	}
+}
+
+// プレビューの結果には、PA出力の帯域レベルが入る。書き出し(Render)には入らない。
+func TestPreviewHasPASpectrum(t *testing.T) {
+	p := bassProject(makeBassSource(t))
+	e := NewEngine()
+	res, err := e.Preview(context.Background(), p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pa := res.PA
+	if pa == nil || pa.Series == nil || pa.Series.Bands != analysis.NumBands() || pa.Series.Frames < 70 {
+		t.Fatalf("PA spectrum missing or wrong shape: %+v", pa)
+	}
+	// 音源は 60 Hz(0.5)と 1 kHz(0.2): PA出力でも 60 Hz のほうが約8 dB大きく、2 kHz以上はほとんど無い
+	mid := pa.Series.Frames / 2
+	row := pa.Series.Data[mid*pa.Series.Bands : (mid+1)*pa.Series.Bands]
+	idx := func(fc float64) int {
+		for i, c := range analysis.BandCenters {
+			if c == fc {
+				return i
+			}
+		}
+		return -1
+	}
+	if d := float64(row[idx(63)] - row[idx(1000)]); d < 4 || d > 12 {
+		t.Errorf("63 Hz vs 1 kHz in PA output: %.1f dB (want ~8)", d)
+	}
+	if row[idx(4000)] > -50 {
+		t.Errorf("4 kHz band should be nearly empty: %.1f dB", row[idx(4000)])
+	}
+	if math.IsNaN(pa.OffsetDb) || math.IsInf(pa.OffsetDb, 0) {
+		t.Errorf("offset %v", pa.OffsetDb)
+	}
+
+	// 書き出し用の Render には入れない(余計な計算をしない)
+	full, err := Render(context.Background(), p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.PA != nil {
+		t.Error("Render should not compute the PA spectrum")
+	}
+}
+
+// 残響量や座席を変えても、PA出力の帯域レベルは再計算されない(同じ結果が返る)。PAを変えると変わる。
+func TestPASpectrumCaching(t *testing.T) {
+	p := bassProject(makeBassSource(t))
+	e := NewEngine()
+	first, err := e.Preview(context.Background(), p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := p.Clone()
+	q.Reverb.Mix = 0.5
+	q.Listener.X = 4
+	second, err := e.Preview(context.Background(), q, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.PA.Series != second.PA.Series {
+		t.Error("PA spectrum was recomputed although the PA did not change")
+	}
+	r := p.Clone()
+	r.PA.LowShelfDb = 9
+	third, err := e.Preview(context.Background(), r, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.PA.Series == first.PA.Series {
+		t.Error("PA spectrum should change when the PA changes")
+	}
+	i := 5 // 63 Hz 帯
+	mid := first.PA.Series.Frames / 2
+	if a, b := third.PA.Series.Data[mid*31+i], first.PA.Series.Data[mid*31+i]; a-b < 6 {
+		t.Errorf("+9 dB low shelf raised the 63 Hz band by only %.1f dB", a-b)
 	}
 }
