@@ -21,6 +21,7 @@ go test ./internal/dsp -run TestXxx # 単一テスト
 wails dev                           # GUIの開発起動(Node.js必須)。ブラウザからは http://localhost:34115
 wails build                         # 配布ビルド(build/bin/TottemoLive.exe)
 cd frontend && npx svelte-check   # フロントの型チェック
+cd frontend && npm test             # フロントの純粋な計算(スペクトラムの帯域・補正など)のテスト(node:test)
 ```
 
 実行時に `ffmpeg` / `ffprobe` がPATH上に必要(ステム分離を使うなら `demucs` も。無ければ分離ボタンが出ないだけ。`TOTTEMOLIVE_DEMUCS` で場所を指定可。テストは偽のdemucsで行う)(デコード・エンコードを子プロセスで行うため。環境変数 `TOTTEMOLIVE_FFMPEG` `TOTTEMOLIVE_FFPROBE` で場所を指定可)。Demucsは任意機能。
