@@ -10,11 +10,13 @@ FFmpeg／ffprobeが必須で、Demucsによるステム分離は任意です。
 
 | ワークフロー | 自動実行 | 手動実行 | 成果物 |
 | --- | --- | --- | --- |
-| CI（ci.yml） | main／devへのpushとPR | workflow_dispatch | 各OSのZIPとSHA-256 |
-| Build and Release（release.yml） | v*タグのpush | workflow_dispatch | 各OSのZIPとSHA-256。タグ実行のみGitHub Releasesへ公開 |
-| Validate and build（build.yml） | 上記から共通処理を呼び出す | 直接実行せず上記を使用 | 検証・ビルド・ZIP作成 |
+| CI（ci.yml） | main／devへのpushとPR | workflow_dispatch | Ubuntuで検証・ビルド。Linux検証用tar.gzとSHA-256 |
+| Build and Release（release.yml） | v*タグのpush | workflow_dispatch | Ubuntuで検証後、Windows／Macの配布ZIPとSHA-256。タグ実行のみ公開 |
+| Release desktop build（build.yml） | リリース用ワークフローから呼び出す | 直接実行せずBuild and Releaseを使用 | Windows／Macの検証・ビルド・ZIP作成 |
 
-いずれもWindows x64、Mac Intel、Mac Apple Siliconをビルドします。
+通常CIはubuntu-24.04だけで実行します。
+Windows x64、Mac Intel、Mac Apple Siliconのネイティブビルドは、タグまたは手動で起動するリリース用ワークフローに限定します。
+リリース用ワークフローも最初にUbuntuのCIを実行し、その成功後に各OSのビルドを開始します。
 型チェック、フロントエンドのテスト、Goのテストとvet、配布スクリプトのテストに成功した成果物を保存します。
 CIにもFFmpeg／ffprobeを導入するため、音声処理のテストを実行できます。
 成果物にはFFmpegを同梱しません。
@@ -27,8 +29,11 @@ workflow_dispatchは、ワークフローファイルが既定ブランチに存
 1. GitHubの「Actions」を開きます。
 2. 「CI」または「Build and Release」を選びます。
 3. 「Run workflow」で対象ブランチ／タグを選び、実行します。
-4. 成功した実行の「Artifacts」から対象OSのTottemoLive-*をダウンロードします。
-5. artifactのZIPを展開し、中にある配布ZIPとチェックサムを取り出します。
+4. 成功した実行の「Artifacts」から成果物をダウンロードします。
+5. Build and Releaseの成果物は、artifactのZIPを展開し、中の対象OSの配布ZIPとチェックサムを取り出します。
+
+CIの成果物はTottemoLive-ci-linux-amd64です。Ubuntuでのビルド検証用tar.gzで、Windows／Mac向けの配布物ではありません。
+LinuxのGUIビルドにはGTK 3とWebKitGTK 4.1を使用し、Goのテスト・vetとWailsビルドにwebkit2_41タグを付けます。
 
 どちらの手動実行もGitHub Releasesへの公開は行いません。
 手動ビルドのアプリバージョンは選択したリビジョンのwails.jsonの値です。

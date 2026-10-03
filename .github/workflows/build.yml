@@ -1,10 +1,10 @@
-name: Validate and build (reusable)
+name: Release desktop build (reusable)
 
 on:
   workflow_call:
     inputs:
       release-tag:
-        description: Stable release tag; empty for CI and manual builds
+        description: Stable release tag; empty for manual release builds
         type: string
         default: ''
         required: false

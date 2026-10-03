@@ -3,14 +3,16 @@
 ## 目的と合意した範囲
 
 TottemoLiveの変更を自動検証し、WindowsとMacで利用できるデスクトップアプリをGitHub Releasesから配布する。
-ユーザーは、CIでのテストと両OSのビルド、バージョンタグによる配布、利用手順の整備に同意した。
+ユーザーは、CIでのテストとビルド、バージョンタグによる配布、利用手順の整備に同意した。
+後続の合意により、通常CIはUbuntuを使い、Windows／Macのネイティブビルドはリリース用ワークフローだけで実行する。
 FFmpeg／ffprobeは同梱せず、利用者が別途インストールする。
 Demucsは現在と同じ任意機能とする。
 追加要望として、CIと配布用ビルドの両方をworkflow_dispatchで手動実行できるようにする。
 
 ## 構成の選択
 
-GitHub Actionsで各OSのネイティブビルドを行う。
+GitHub Actionsの通常CIはUbuntuで検証とLinuxのGUIビルドを行う。
+リリース用ワークフローは、Ubuntuでの検証に成功した後、各OSのネイティブビルドを行う。
 既存リポジトリがGitHubにあり、WailsのGUIを各OS上で検証できるため、この構成を採用する。
 クロスコンパイルだけではMacのGUIビルドを十分に検証できない。
 外部CIサービスを追加する必要はない。
@@ -18,17 +20,20 @@ GitHub Actionsで各OSのネイティブビルドを行う。
 ## CI
 
 - PR、対象ブランチへのpush、手動実行で検証する。対象ブランチは実装時にリポジトリの既定ブランチとgitflow運用を確認して決める。
-- Windows x64、Mac Intel、Mac Apple Siliconを対象にする。
+- 通常CIはubuntu-24.04だけで実行する。LinuxビルドのGTK 3とWebKitGTK 4.1をインストールし、Goの検証とWailsビルドにwebkit2_41タグを付ける。
 - Goのバージョンはgo.mod、Wails CLIのバージョンは同ファイルのWails依存に合わせる。
 - Node.jsはフロントエンドのテストとViteが動作する固定メジャーを選択する。
 - npm ciでロックファイルからインストールし、型チェック、フロントエンドのテスト、ビルドを実行する。
 - FFmpeg／ffprobeをCIにインストールし、存在を確認してGoの音声処理テストがスキップされないようにする。
-- Goのテストと静的検査、Wailsのリリースビルドを実行する。
+- Goのテストと静的検査、WailsのLinux本番ビルドを実行する。
+- Linuxの成果物は検証用tar.gzとして保存し、Windows／Mac向けの配布物とは区別する。
 - 成果物をActionsからダウンロードできるようにする。
 
 ## CDと成果物
 
 - vで始まるバージョンタグのpushをリリースの起点とする。
+- リリース用ワークフローだけでWindows x64、Mac Intel、Mac Apple Siliconをビルドする。
+- タグ・手動実行とも、まずUbuntuのCIを再利用して検証し、成功後にOS別ビルドを開始する。
 - 配布用ビルドにもworkflow_dispatchを設定する。手動実行では選択したブランチ／タグから全対象をビルドし、成果物とチェックサムをActionsのartifactとして保存する。手動実行によるGitHub Releasesへの公開は行わない。
 - CIと同じ検証を通過したビルドだけを配布する。
 - WindowsはTottemoLive.exeを含むZIP、Macは.appを含むアーキテクチャ別ZIPとして配布する。

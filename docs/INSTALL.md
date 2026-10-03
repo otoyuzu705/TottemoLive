@@ -12,9 +12,9 @@ Go、Node.js、Pythonは、配布されたアプリを使うだけなら不要�
 | TottemoLive-macos-amd64.zip | Intel Mac |
 | TottemoLive-macos-arm64.zip | Apple Silicon Mac（M1以降） |
 
-GitHub Releases、またはGitHub Actionsの成功した実行のArtifactsから取得します。
+GitHub Releases、またはGitHub Actionsの「Build and Release」の成功した実行のArtifactsから取得します。
 Actionsのartifact自体もZIPなので、まず外側を展開し、中のTottemoLive-*.zipも展開してください。
-OSの実際の対応範囲は利用するWailsとGoに依存します。CIではWindows Server 2022とmacOS 15で検証します。
+OSの実際の対応範囲は利用するWailsとGoに依存します。リリース用ワークフローではWindows Server 2022とmacOS 15で検証します。通常CIのLinux成果物はビルド検証用です。
 
 ## Windows
 
