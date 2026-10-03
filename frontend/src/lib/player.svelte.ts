@@ -86,7 +86,8 @@ class Player {
   }
 
   private tick = () => {
-    this.position = this.audio.currentTime + this.srcOffset
+    // 窓の外へシークして新しい窓を待っている間は、シークした位置を表示する(止めた音の位置に戻さない)
+    this.position = this.target ?? this.audio.currentTime + this.srcOffset
     if (this.playing) this.raf = requestAnimationFrame(this.tick)
   }
 
