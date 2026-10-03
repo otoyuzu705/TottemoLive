@@ -124,21 +124,52 @@ func TestSub(t *testing.T) {
 		}
 		return -1
 	}
-	// サブのほうが近い(25 m)と、メイン(34.3 m)に合わせて遅れる。減衰はサブ自身の距離(25 m, 逆距離則)
-	out := Sub(in, 48000, 25, 34.3, 1)
-	if first(out) != DelaySamples(34.3, 48000) || math.Abs(float64(out[first(out)])-0.4) > 1e-6 {
-		t.Errorf("near sub: index %d value %v", first(out), out[first(out)])
+	// 遅延 = 距離の伝搬遅延 + 追加の遅延。減衰はサブ自身の距離(25 m, 逆距離則 → 0.4)
+	out := Sub(in, 48000, 25, 300, 1)
+	if want := DelaySamples(25, 48000) + 300; first(out) != want || math.Abs(float64(out[first(out)])-0.4) > 1e-6 {
+		t.Errorf("index %d (want %d) value %v", first(out), want, out[first(out)])
 	}
 	if len(out) != len(in)+first(out) {
 		t.Errorf("length %d", len(out))
 	}
-	// サブのほうが遠いときは、自身の距離の遅延(メインより遅れる)になる
-	out = Sub(in, 48000, 40, 30, 1)
-	if first(out) != DelaySamples(40, 48000) {
-		t.Errorf("far sub: index %d", first(out))
+	// 追加の遅延なし(または負)は、伝搬遅延だけ
+	if got := first(Sub(in, 48000, 40, 0, 1)); got != DelaySamples(40, 48000) {
+		t.Errorf("no extra delay: index %d", got)
 	}
-	// 基準距離より近いと大きくなる(逆距離則)
-	if v := Sub(in, 48000, 5, 5, 1); math.Abs(float64(v[first(v)])-2) > 1e-6 {
+	if got := first(Sub(in, 48000, 40, -5, 1)); got != DelaySamples(40, 48000) {
+		t.Errorf("negative extra delay must be ignored: index %d", got)
+	}
+	// 基準距離(10 m)より近いと大きくなる(逆距離則)
+	if v := Sub(in, 48000, 5, 0, 1); math.Abs(float64(v[first(v)])-2) > 1e-6 {
 		t.Errorf("close sub gain %v, want 2", v[first(v)])
+	}
+}
+
+// 基準点でサブとメインの音が同時に届くよう、サブのほうが近いぶんだけ追加の遅延を決める。遠いときは0。
+// 基準点を固定するので、座席に依らない。
+func TestSubAlignDelays(t *testing.T) {
+	ref := [3]float64{0, 30, 1.2}
+	mains := [][3]float64{{-12, 0, 8}, {12, 0, 8}}
+	subs := [][3]float64{{-7, 1, 0.3}, {7, 1, 0.3}, {0, 90, 0.3}} // 3本目は基準点から見てメインより遠い(60 m先)
+	got := SubAlignDelays(ref, mains, subs, 48000)
+	// メインの平均距離と、サブの距離(基準点から)の差
+	dist := func(p [3]float64) float64 {
+		return math.Sqrt((p[0]-ref[0])*(p[0]-ref[0]) + (p[1]-ref[1])*(p[1]-ref[1]) + (p[2]-ref[2])*(p[2]-ref[2]))
+	}
+	meanMain := (dist(mains[0]) + dist(mains[1])) / 2
+	for i := 0; i < 2; i++ {
+		if want := DelaySamples(meanMain-dist(subs[i]), 48000); got[i] != want || want <= 0 {
+			t.Errorf("sub %d: extra delay %d, want %d (>0)", i, got[i], want)
+		}
+	}
+	if got[0] != got[1] {
+		t.Errorf("symmetric subs at the reference point should get the same delay: %d vs %d", got[0], got[1])
+	}
+	if got[2] != 0 {
+		t.Errorf("a sub farther than the mains must not be delayed: %d", got[2])
+	}
+	// 基準点でのサブの到着時刻 = メインの平均距離の到着時刻(同時に届く)
+	if arrive := DelaySamples(dist(subs[0]), 48000) + got[0]; math.Abs(float64(arrive-DelaySamples(meanMain, 48000))) > 1 {
+		t.Errorf("at the reference point the sub arrives at %d, mains at %d", arrive, DelaySamples(meanMain, 48000))
 	}
 }

@@ -104,3 +104,43 @@ func TestMixGainsPhysicalReverb(t *testing.T) {
 		t.Error("an open-air venue should have a quieter reverb than an arena")
 	}
 }
+
+// サブの追加の遅延は、座席ではなく基準点(客席の中央)で決まる。座席を動かしても変わらず、
+// 基準点から離れた席では、左右のサブの到着時刻が実際のように食い違う(以前は座席ごとに常に完全に揃っていた)。
+func TestSubAlignIsFixedToTheReferencePoint(t *testing.T) {
+	arena, _ := venue.Get("arena")
+	p := project.New()
+	base := subAlignDelays(p, arena)
+	if len(base) != 2 || base[0] <= 0 || base[0] != base[1] {
+		t.Fatalf("extra delays %v: symmetric subs should get the same positive delay", base)
+	}
+	for _, x := range []float64{-30, 0, 25} {
+		q := p.Clone()
+		q.Listener.X, q.Listener.Y = x, 50
+		got := subAlignDelays(q, arena)
+		if got[0] != base[0] || got[1] != base[1] {
+			t.Errorf("listener x=%v moved the sub alignment: %v vs %v", x, got, base)
+		}
+	}
+	// 基準点の位置: 客席の中央(x=0)、奥行きの半分
+	if ref := subAlignReference(arena); ref[0] != 0 || ref[1] != arena.DepthM/2 {
+		t.Errorf("reference %v", ref)
+	}
+	// 基準点にいるとき、左右のサブは同じ時刻に届き、横にずれた席では食い違う
+	arrive := func(l project.Listener) [2]int {
+		var a [2]int
+		for i, s := range p.Venue.Subs {
+			_, _, d := spatial.Direction(l.X, l.Y, l.Z, l.YawDeg, s.X, s.Y, s.Z)
+			a[i] = spatial.DelaySamples(d, sampleRate) + base[i]
+		}
+		return a
+	}
+	center := arrive(project.Listener{X: 0, Y: arena.DepthM / 2, Z: 1.2})
+	if center[0] != center[1] {
+		t.Errorf("at the reference point the two subs should arrive together: %v", center)
+	}
+	side := arrive(project.Listener{X: 30, Y: arena.DepthM / 2, Z: 1.2})
+	if side[0] == side[1] {
+		t.Errorf("off-center the two subs should arrive at different times: %v", side)
+	}
+}

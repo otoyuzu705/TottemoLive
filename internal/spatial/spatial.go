@@ -113,15 +113,35 @@ func convolveFIR(a, b []float32) []float32 {
 
 // Sub はサブウーファーの信号(低域のモノ)に、距離減衰と伝搬遅延を掛けて返す。
 // 低域は方向の手がかりが弱く、空気吸収も受けにくいので、HRIRも空気吸収も通さない(両耳に同じ信号を足す)。
-// 実際のPAと同じく、サブとメインの音がリスナーで揃うように遅延をそろえる:
-// 遅延は サブ自身の距離とメインの代表距離 alignDist の長いほうに合わせる(サブのほうが近いときだけサブを遅らせる)。
+// 遅延は、リスナーまでの伝搬遅延(dist / 音速)に、サブをメインに時間合わせするための追加の遅延 extraDelay
+// (サンプル)を足したもの。追加の遅延は、現場と同じく基準点で1回だけ決める(SubAlignDelays)ので、
+// 基準点から離れた席では、サブとメインの時間差やサブ同士の干渉が実際のように出る。
 // 減衰はサブ自身の距離で決まる。出力長は len(in)+遅延。
-func Sub(in []float32, sr int, dist, alignDist, rolloff float64) []float32 {
-	delay := DelaySamples(math.Max(dist, alignDist), sr)
+func Sub(in []float32, sr int, dist float64, extraDelay int, rolloff float64) []float32 {
+	delay := DelaySamples(dist, sr) + max(extraDelay, 0)
 	g := float32(Gain(dist, rolloff))
 	out := make([]float32, delay+len(in))
 	for i, v := range in {
 		out[delay+i] = v * g
+	}
+	return out
+}
+
+// SubAlignDelays は、サブをメインに時間合わせするための、サブごとの追加の遅延(サンプル)。
+// 基準点(現場のFOHなど、ディレイ補正を取る位置)で、サブの音がメイン(の平均距離)の音と同時に届くように、
+// 基準点でサブのほうが近いぶんだけ遅らせる(サブのほうが遠いときは 0)。基準点を1つに固定するので、
+// 座席を動かしても追加の遅延は変わらない。
+func SubAlignDelays(ref [3]float64, mains, subs [][3]float64, sr int) []int {
+	dist := func(p [3]float64) float64 {
+		return math.Sqrt((p[0]-ref[0])*(p[0]-ref[0]) + (p[1]-ref[1])*(p[1]-ref[1]) + (p[2]-ref[2])*(p[2]-ref[2]))
+	}
+	mean := 0.0
+	for _, m := range mains {
+		mean += dist(m) / float64(len(mains))
+	}
+	out := make([]int, len(subs))
+	for i, s := range subs {
+		out[i] = DelaySamples(math.Max(mean-dist(s), 0), sr)
 	}
 	return out
 }

@@ -459,7 +459,7 @@ func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, pa
 	if !subsActive(p) {
 		subs = nil
 	}
-	key := hashKey(paKey, total, p.Listener, p.Venue.Speakers, subs, sub,
+	key := hashKey(paKey, total, p.Venue.Preset, p.Listener, p.Venue.Speakers, subs, sub,
 		p.Spatial.HrirSet, p.Spatial.DistanceRolloff, p.Spatial.AirAbsorption)
 	return memo(e.cache, "direct", key, func() ([][]float32, error) {
 		spk := p.Venue.Speakers
@@ -506,7 +506,7 @@ func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, pa
 			return nil, err
 		}
 		if subOn {
-			addSubs(out, in, p)
+			addSubs(out, in, p, pp.pr)
 		}
 		return out, nil
 	})
@@ -517,7 +517,7 @@ func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, pa
 // サブごとに距離減衰・遅延を掛けて両耳に同じ信号として足す。
 // 左右の合計にするのは、中央に定位した低音(左右同じ信号)がメイン2本でコヒーレントに足される大きさ(+6 dB)に
 // 合わせるため。これで levelDb 0 が「メインの低域と同じ大きさ」になる。
-func addSubs(out, bus [][]float32, p project.Project) {
+func addSubs(out, bus [][]float32, p project.Project, pr venue.Preset) {
 	mono := make([]float32, len(bus[0]))
 	for i := range mono {
 		mono[i] = bus[0][i] + bus[1][i]
@@ -527,19 +527,31 @@ func addSubs(out, bus [][]float32, p project.Project) {
 	for i := range mono {
 		mono[i] *= g
 	}
-	// メインの代表距離(サブの遅延をメインに合わせる基準)
-	mains := 0.0
-	for _, s := range p.Venue.Speakers {
+	extra := subAlignDelays(p, pr)
+	for i, s := range p.Venue.Subs {
 		_, _, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
-		mains += d / float64(len(p.Venue.Speakers))
-	}
-	for _, s := range p.Venue.Subs {
-		_, _, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
-		sig := spatial.Sub(mono, sampleRate, d, mains, p.Spatial.DistanceRolloff)
+		sig := spatial.Sub(mono, sampleRate, d, extra[i], p.Spatial.DistanceRolloff)
 		for c := range out {
 			addInto(out[c], sig)
 		}
 	}
+}
+
+// subAlignReference は、サブをメインに時間合わせする基準点(現場のFOH: 客席の中央、奥行きの半分、耳の高さ)。
+func subAlignReference(pr venue.Preset) [3]float64 {
+	return [3]float64{0, pr.DepthM / 2, 1.2}
+}
+
+// subAlignDelays は、サブごとの追加の遅延(サンプル)。座席には依らず、会場とスピーカー・サブの位置で決まる。
+func subAlignDelays(p project.Project, pr venue.Preset) []int {
+	pos := func(sp []project.Speaker) [][3]float64 {
+		out := make([][3]float64, len(sp))
+		for i, s := range sp {
+			out[i] = [3]float64{s.X, s.Y, s.Z}
+		}
+		return out
+	}
+	return spatial.SubAlignDelays(subAlignReference(pr), pos(p.Venue.Speakers), pos(p.Venue.Subs), sampleRate)
 }
 
 // subsActive はサブウーファー経路が有効か(有効にしてあり、サブが1台以上ある)。
