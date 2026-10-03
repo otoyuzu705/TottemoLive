@@ -16,10 +16,6 @@ const (
 	// RefDistanceM は距離減衰の基準距離(ゲイン1)。これより近い音は大きくなり、最大 MaxGain まで持ち上げる。
 	RefDistanceM = 10.0
 	MaxGain      = 4.0
-	// 空気吸収: カットオフ = AirBaseHz / (1 + absorption * d / AirScaleM)、AirMinHz を下限にする。
-	AirBaseHz = 20000.0
-	AirScaleM = 40.0
-	AirMinHz  = 1500.0
 )
 
 // HRIR は片方向のインパルス応答(左右の耳)。
@@ -51,14 +47,6 @@ func Gain(d, rolloff float64) float64 {
 	return math.Min(math.Pow(RefDistanceM/math.Max(d, 1e-3), rolloff), MaxGain)
 }
 
-// AirCutoffHz は空気吸収を模す低域通過のカットオフ。absorption=0 のときは 0(フィルタなし)。
-func AirCutoffHz(d, absorption float64) float64 {
-	if absorption <= 0 {
-		return 0
-	}
-	return math.Max(AirBaseHz/(1+absorption*d/AirScaleM), AirMinHz)
-}
-
 // DelaySamples は距離 d(m) の伝搬遅延(サンプル数、四捨五入)。
 func DelaySamples(d float64, sr int) int {
 	return int(math.Round(d / SpeedOfSound * float64(sr)))
@@ -87,21 +75,40 @@ type DirectParams struct {
 // Direct はスピーカーへの入力 in を、距離減衰・空気吸収・伝搬遅延・HRIR畳み込みを通した
 // 左右の耳の信号にして返す。出力長は len(in)+遅延+len(HRIR)-1。
 func Direct(ctx context.Context, in []float32, sr int, dist, azDeg, elDeg float64, set Set, p DirectParams) ([][]float32, error) {
+	// 空気吸収(線形位相FIR)の群遅延ぶん、伝搬遅延から引いて、全体の遅れを合わせる(近すぎて引けないぶんは遅れる)
+	air := AirFIR(dist, p.AirAbsorption, sr)
 	delay := DelaySamples(dist, sr)
-	x := make([]float32, delay+len(in))
+	lead := 0
+	if air != nil {
+		lead = min(delay, AirGroupDelay)
+	}
+	x := make([]float32, delay-lead+len(in))
 	g := float32(Gain(dist, p.Rolloff))
 	for i, v := range in {
-		x[delay+i] = v * g
-	}
-	if fc := AirCutoffHz(dist, p.AirAbsorption); fc > 0 {
-		dsp.LowPass(float64(sr), fc).Process(x)
+		x[delay-lead+i] = v * g
 	}
 	h := set.Lookup(azDeg, elDeg)
-	earL, earR, err := dsp.ConvolvePair(ctx, x, h.L, h.R)
+	hl, hr := h.L, h.R
+	if air != nil {
+		// 吸収は、距離ごとの小さなFIRなので、HRIRと先に畳み込んで1回の畳み込みにする(長さは512以下に収まる)
+		hl, hr = convolveFIR(h.L, air), convolveFIR(h.R, air)
+	}
+	earL, earR, err := dsp.ConvolvePair(ctx, x, hl, hr)
 	if err != nil {
 		return nil, err
 	}
 	return [][]float32{earL, earR}, nil
+}
+
+// convolveFIR は短いFIR同士の直接畳み込み(長さ len(a)+len(b)-1)。
+func convolveFIR(a, b []float32) []float32 {
+	out := make([]float32, len(a)+len(b)-1)
+	for i, av := range a {
+		for j, bv := range b {
+			out[i+j] += av * bv
+		}
+	}
+	return out
 }
 
 // Sub はサブウーファーの信号(低域のモノ)に、距離減衰と伝搬遅延を掛けて返す。

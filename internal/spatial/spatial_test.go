@@ -90,9 +90,6 @@ func TestDistanceModel(t *testing.T) {
 	if math.Abs(20*math.Log10(MaxGain)-12.04) > 0.01 {
 		t.Errorf("MaxGain is %.2f dB, want +12 dB", 20*math.Log10(MaxGain))
 	}
-	if AirCutoffHz(50, 0) != 0 || AirCutoffHz(100, 1) >= AirCutoffHz(10, 1) || AirCutoffHz(1e6, 2) != AirMinHz {
-		t.Error("air cutoff")
-	}
 	if DelaySamples(34.3, 48000) != 4800 {
 		t.Errorf("delay=%d", DelaySamples(34.3, 48000))
 	}
