@@ -120,7 +120,11 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 
 	// 2. 処理
 	steps := newSteps(prog, StageProcess, len(srcs)+5)
-	pa, err := e.paStage(ctx, p, srcs, steps)
+	level, err := e.inputLevelStage(ctx, p, srcs)
+	if err != nil {
+		return nil, err
+	}
+	pa, err := e.paStage(ctx, p, srcs, level, steps)
 	if err != nil {
 		return nil, err
 	}
@@ -278,9 +282,78 @@ type paResult struct {
 	bufs [][][]float32
 }
 
-// paStage は音源ごとに(ゲイン → PA質感)を並列に処理する。
-// 読むもの: 音源のゲイン、pa.* の全項目、上流のデコード結果。
-func (e *Engine) paStage(ctx context.Context, p project.Project, srcs []stageOut, steps *steps) (paResult, error) {
+// inputLevel はPA入力のレベル合わせの結果。AlignDb はPAの前に全音源へ共通に掛けるゲイン(dB)。
+// Preloaded は、レベルの測定のためにデコードした音源(PA段が再利用する。使ったら nil にする)。
+type inputLevel struct {
+	AlignDb   float64
+	preloaded [][][]float32
+}
+
+// inputLevelStage は、PAの前にレベルをそろえるゲインを求める。PAのコンプ(スレッショルド -18 dBFS など)と歪みは
+// 入力の絶対レベルで効くので、曲のマスターの音量が違うと同じ設定でも効き方が変わり、『別の曲にそのまま適用できる』
+// 音作りプリセットにならない。そこで、音源ゲイン後の合計(バス)の統合ラウドネスを pa.inputLufs にそろえる。
+// 全音源に共通のゲインなので、ボーカルと伴奏などの音量バランスは変わらない。音源のゲインは、その上の微調整になる。
+//
+// 読むもの: 音源のファイルとゲインだけ(測定したラウドネスはキャッシュし、pa.inputLufs の変更ではデコードし直さない)。
+// 測定のためにデコードしたときは、その結果をPA段に渡して二重にデコードしない。
+func (e *Engine) inputLevelStage(ctx context.Context, p project.Project, srcs []stageOut) (inputLevel, error) {
+	if p.PA.AutoLevel != "on" {
+		return inputLevel{}, nil
+	}
+	parts := make([]any, 0, 2*len(srcs))
+	for i, s := range srcs {
+		parts = append(parts, s.key, p.Sources[i].GainDb)
+	}
+	key := hashKey(parts...)
+	var preloaded [][][]float32
+	lufs, err := memo(e.cache, "inputLevel", key, func() (float64, error) {
+		bufs := make([][][]float32, len(srcs))
+		errs := make([]error, len(srcs))
+		var wg sync.WaitGroup
+		for i := range srcs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				bufs[i], errs[i] = srcs[i].load(ctx)
+			}()
+		}
+		wg.Wait()
+		if err := errors.Join(errs...); err != nil {
+			return 0, err
+		}
+		sum := make([][]float32, 2)
+		n := 0
+		for _, b := range bufs {
+			n = max(n, len(b[0]))
+		}
+		for c := range sum {
+			sum[c] = make([]float32, n)
+			for i, b := range bufs {
+				g := float32(dsp.DbToLin(p.Sources[i].GainDb))
+				for k, v := range b[c] {
+					sum[c][k] += v * g
+				}
+			}
+		}
+		preloaded = bufs
+		return dsp.IntegratedLUFS(sum, sampleRate), nil
+	})
+	if err != nil {
+		return inputLevel{}, err
+	}
+	lv := inputLevel{preloaded: preloaded}
+	if !math.IsInf(lufs, 0) && !math.IsNaN(lufs) {
+		lv.AlignDb = math.Min(math.Max(p.PA.InputLufs-lufs, -maxAlignDb), maxAlignDb)
+	}
+	return lv, nil
+}
+
+// maxAlignDb は、PA入力のレベル合わせで掛けるゲインの絶対値の上限(dB)。極端に小さい・大きい音源で破綻しないように。
+const maxAlignDb = 40
+
+// paStage は音源ごとに(ゲイン + レベル合わせ → PA質感)を並列に処理する。
+// 読むもの: 音源のゲイン、レベル合わせのゲイン、pa.* の全項目(autoLevel・inputLufs を含む)、上流のデコード結果。
+func (e *Engine) paStage(ctx context.Context, p project.Project, srcs []stageOut, level inputLevel, steps *steps) (paResult, error) {
 	res := paResult{bufs: make([][][]float32, len(srcs))}
 	keys := make([]string, len(srcs))
 	errs := make([]error, len(srcs))
@@ -290,13 +363,18 @@ func (e *Engine) paStage(ctx context.Context, p project.Project, srcs []stageOut
 		go func() {
 			defer wg.Done()
 			defer steps.done()
-			keys[i] = hashKey(srcs[i].key, p.Sources[i].GainDb, p.PA)
+			keys[i] = hashKey(srcs[i].key, p.Sources[i].GainDb, level.AlignDb, p.PA)
 			res.bufs[i], errs[i] = memo(e.cache, fmt.Sprintf("pa:%d", i), keys[i], func() ([][]float32, error) {
-				buf, err := srcs[i].load(ctx) // デコード結果は他で使わないので、その場で処理してよい
-				if err != nil {
-					return nil, err
+				var buf [][]float32
+				if level.preloaded != nil && level.preloaded[i] != nil {
+					buf, level.preloaded[i] = level.preloaded[i], nil // レベルの測定でデコード済み
+				} else {
+					var err error
+					if buf, err = srcs[i].load(ctx); err != nil { // デコード結果は他で使わないので、その場で処理してよい
+						return nil, err
+					}
 				}
-				applyPA(buf, sampleRate, p.Sources[i].GainDb, p.PA)
+				applyPA(buf, sampleRate, p.Sources[i].GainDb+level.AlignDb, p.PA)
 				return buf, nil
 			})
 		}()

@@ -274,3 +274,53 @@ func TestSubAffectsReverbOnlyWhenEnabled(t *testing.T) {
 		t.Error("sub settings must not matter while the sub is disabled")
 	}
 }
+
+// 同じ曲を音量だけ変えた2つの音源は、PA入力のレベル合わせがオンなら、ほぼ同じ音になる(プリセットが曲のマスターの音量に依らない)。
+// オフだと、コンプ・歪みの効き方が違うので別の音になる。
+func TestAutoLevelMakesPAIndependentOfSourceLevel(t *testing.T) {
+	if !audio.Available() {
+		t.Skip("ffmpeg がないためスキップ")
+	}
+	dir := t.TempDir()
+	loud, quiet := filepath.Join(dir, "loud.wav"), filepath.Join(dir, "quiet.wav")
+	for path, vol := range map[string]string{loud: "1.0", quiet: "0.08"} {
+		out, err := exec.Command("ffmpeg", "-v", "error", "-y",
+			"-f", "lavfi", "-i", "sine=frequency=100:duration=4:sample_rate=48000",
+			"-f", "lavfi", "-i", "sine=frequency=1500:duration=4:sample_rate=48000",
+			"-filter_complex", "[0]volume=0.5[a];[1]volume=0.4,tremolo=f=3:d=1[b];[a][b]amix=inputs=2:normalize=0,volume="+vol, path).CombinedOutput()
+		if err != nil {
+			t.Fatalf("ffmpeg: %v %s", err, out)
+		}
+	}
+	render := func(path, auto string) [][]float32 {
+		p := bassProject(path)
+		p.PA.AutoLevel = auto
+		p.PA.CompThresholdDb = -24
+		p.PA.CompRatio = 6
+		p.PA.Drive = 0.6 // 入力のレベルで効き方が変わる非線形な段を強めに効かせる
+		res, err := Render(context.Background(), p, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Audio
+	}
+	relDiffDb := func(a, b [][]float32) float64 { // 左チャンネルの差のRMS / 信号のRMS(dB)
+		n := min(len(a[0]), len(b[0]))
+		var d, s float64
+		for i := 0; i < n; i++ {
+			x, y := float64(a[0][i]), float64(b[0][i])
+			d += (x - y) * (x - y)
+			s += x * x
+		}
+		return 10 * math.Log10(d/s)
+	}
+	on := relDiffDb(render(loud, "on"), render(quiet, "on"))
+	off := relDiffDb(render(loud, "off"), render(quiet, "off"))
+	t.Logf("difference between loud and quiet source: auto-level on %.1f dB, off %.1f dB", on, off)
+	if on > -35 {
+		t.Errorf("with auto level the two renders should match, difference %.1f dB", on)
+	}
+	if off < on+10 { // 差が大きいほど値は大きい(0 dBに近い)
+		t.Errorf("without auto level the renders should differ clearly more (on %.1f dB, off %.1f dB)", on, off)
+	}
+}
