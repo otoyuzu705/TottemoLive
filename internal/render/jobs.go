@@ -48,6 +48,17 @@ func (j *Jobs) Begin(parent context.Context, kind string) (id string, ctx contex
 	}
 }
 
+// CancelKind は、実行中の kind のジョブを中断する。無ければ何もしない。
+func (j *Jobs) CancelKind(kind string) {
+	j.mu.Lock()
+	id, ok := j.byKind[kind]
+	c := j.cancels[id]
+	j.mu.Unlock()
+	if ok && c != nil {
+		c()
+	}
+}
+
 // Cancel はジョブを中断する。存在しないIDは無視する。
 func (j *Jobs) Cancel(id string) {
 	j.mu.Lock()

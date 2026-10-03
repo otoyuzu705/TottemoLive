@@ -48,7 +48,7 @@
   <span class="hint">波形をクリック・ドラッグで再生位置を移動 / Space で再生・停止 / 音量は再計算なしで変わります(プレビュー専用)</span>
 
   <div class="status" aria-live="polite">
-    {#if app.busy > 0}<span class="spin"></span> 曲全体を処理中…{:else if hasPreview}<span class="ok">● 最新</span>{/if}
+    {#if app.busy > 0}<span class="spin"></span> 曲全体を処理中…{#if player.windowed}<span class="early">(先行プレビュー: この位置から約30秒を再生できます)</span>{/if}{:else if hasPreview}<span class="ok">● 最新</span>{/if}
   </div>
 </div>
 
@@ -68,6 +68,7 @@
   .hint { color: var(--muted); font-size: 11px; }
   .status { margin-left: auto; color: var(--muted); display: flex; align-items: center; gap: 6px; }
   .ok { color: var(--ok); }
+  .early { color: var(--muted); font-size: 11px; }
   .spin { width: 10px; height: 10px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }

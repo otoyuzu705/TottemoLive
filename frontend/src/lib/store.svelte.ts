@@ -6,6 +6,8 @@ import { player } from './player.svelte'
 import { parseBandSeries, type BandSeries } from './spectrum'
 
 const PREVIEW_DEBOUNCE_MS = 200
+/** これより長い曲では、曲全体の前に、再生位置の周辺だけを先に処理する(先行プレビュー) */
+const WINDOW_MIN_SONG_SEC = 45
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
@@ -32,9 +34,16 @@ class AppState {
   private origTimer = 0
   private seq = 0
   private origSeq = 0
+  /** 先行プレビューの要求の通し番号(新しい要求や曲全体の到着で、古いものを捨てる) */
+  private winSeq = 0
+  /** 処理中のプレビューのプロジェクト(窓の外へシークされたとき、同じ値で窓を作り直す)。無ければ null */
+  private pending: project.Project | null = null
   private toastTimer = 0
 
   async init() {
+    player.onWindowMiss = (sec) => {
+      if (this.pending) void this.renderWindow(this.pending, sec, false, this.seq)
+    }
     const [proj, specs, venues, presets] = await Promise.all([
       Go.NewProject(),
       Go.ListParams(),
@@ -269,21 +278,45 @@ class AppState {
     const p = untrack(() => this.proj)
     if (!p || p.sources.length === 0) return
     const mine = ++this.seq
+    const snap = $state.snapshot(p) as project.Project
     this.busy++
+    this.pending = snap
     try {
-      const r = await Go.RenderPreview($state.snapshot(p) as project.Project)
+      // 先に、いまの再生位置の周辺だけを処理して聴けるようにする(曲全体の処理はその後)。短い曲は全体もすぐ終わるので省く
+      if (this.duration > WINDOW_MIN_SONG_SEC) await this.renderWindow(snap, player.position, true, mine)
+      if (mine !== this.seq) return
+      const r = await Go.RenderPreview(snap)
       // URLが空なのは、新しい要求に追い越されて中断された印。古い結果は捨てる
       if (!r.url || mine !== this.seq) return
       // PA出力の帯域レベル(スペクトラム表示で耳に届く音に重ねる)。取れなくても再生は続ける
       const pa = await this.fetchPASeries(r)
       if (mine !== this.seq) return
       // 再生位置は保ったまま差し替える
+      this.winSeq++ // 曲全体が届いたので、まだ処理中の先行プレビューは使わない
       await player.load('processed', r.url, true)
       player.pa = pa
     } catch (e) {
       if (mine === this.seq) this.fail(e)
     } finally {
       this.busy--
+      if (mine === this.seq) this.pending = null
+    }
+  }
+
+  /**
+   * 先行プレビュー(sec 秒の周辺の約30秒だけを先に処理した音)を作って再生に回す。sec は曲頭からの秒。
+   * supersede は、新しいパラメーターでの最初の処理か(進行中の古い曲全体の処理を止める)。
+   * 窓の外へシークしたときに同じ値のまま呼ぶ場合は false(曲全体の処理は続ける)。
+   */
+  private async renderWindow(p: project.Project, sec: number, supersede: boolean, mine: number) {
+    const win = ++this.winSeq
+    try {
+      const w = await Go.RenderPreviewWindow(p, sec, supersede)
+      // 空なのは追い越された印。曲全体が届いた後や、別の窓の要求があった後に届いたものも捨てる
+      if (!w.url || mine !== this.seq || win !== this.winSeq) return
+      await player.load('processed', w.url, true, { offset: w.startSec, total: w.totalSec, windowed: true })
+    } catch (e) {
+      if (mine === this.seq && win === this.winSeq) this.fail(e)
     }
   }
 

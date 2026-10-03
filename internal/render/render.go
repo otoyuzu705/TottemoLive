@@ -462,54 +462,60 @@ func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, pa
 	key := hashKey(paKey, total, p.Venue.Preset, p.Listener, p.Venue.Speakers, subs, sub,
 		p.Spatial.HrirSet, p.Spatial.DistanceRolloff, p.Spatial.AirAbsorption)
 	return memo(e.cache, "direct", key, func() ([][]float32, error) {
-		spk := p.Venue.Speakers
-		subOn := subsActive(p)
-		in := bus.get()
-		out := [][]float32{make([]float32, total), make([]float32, total)}
-		// スピーカーごとに並列に計算し、できた順ではなくスピーカーの順に足し込む。
-		// 全スピーカーぶんの結果を同時に持たず、足し算の順序も固定になる
-		turn := make([]chan struct{}, len(spk))
-		for i := range turn {
-			turn[i] = make(chan struct{})
-		}
-		errs := make([]error, len(spk))
-		var wg sync.WaitGroup
-		for i, s := range spk {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				defer close(turn[i])
-				feed := speakerFeed(in, i, len(spk))
-				if subOn {
-					// 低域はサブが受け持つので、メインは中高域だけにする(元のバスは他の経路が使うので複製して掛ける)
-					feed = append([]float32(nil), feed...)
-					dsp.LR4HighPass(feed, sampleRate, p.Sub.CrossoverHz)
-				}
-				az, el, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
-				r, err := spatial.Direct(ctx, feed, sampleRate, d, az, el, pp.set, spatial.DirectParams{
-					Rolloff: p.Spatial.DistanceRolloff, AirAbsorption: p.Spatial.AirAbsorption,
-				})
-				if i > 0 {
-					<-turn[i-1]
-				}
-				if err != nil {
-					errs[i] = err
-					return
-				}
-				for c := range out {
-					addInto(out[c], r[c])
-				}
-			}()
-		}
-		wg.Wait()
-		if err := errors.Join(errs...); err != nil {
-			return nil, err
-		}
-		if subOn {
-			addSubs(out, in, p, pp.pr)
-		}
-		return out, nil
+		return directCompute(ctx, pp, bus.get(), total)
 	})
+}
+
+// directCompute は、バス in(曲の先頭からの信号)から直接音を計算する。長さは total。
+// 先行プレビューは、曲の一部を切り出したバスに対して同じ計算を呼ぶ。
+func directCompute(ctx context.Context, pp *prepared, in [][]float32, total int) ([][]float32, error) {
+	p := pp.p
+	spk := p.Venue.Speakers
+	subOn := subsActive(p)
+	out := [][]float32{make([]float32, total), make([]float32, total)}
+	// スピーカーごとに並列に計算し、できた順ではなくスピーカーの順に足し込む。
+	// 全スピーカーぶんの結果を同時に持たず、足し算の順序も固定になる
+	turn := make([]chan struct{}, len(spk))
+	for i := range turn {
+		turn[i] = make(chan struct{})
+	}
+	errs := make([]error, len(spk))
+	var wg sync.WaitGroup
+	for i, s := range spk {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer close(turn[i])
+			feed := speakerFeed(in, i, len(spk))
+			if subOn {
+				// 低域はサブが受け持つので、メインは中高域だけにする(元のバスは他の経路が使うので複製して掛ける)
+				feed = append([]float32(nil), feed...)
+				dsp.LR4HighPass(feed, sampleRate, p.Sub.CrossoverHz)
+			}
+			az, el, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
+			r, err := spatial.Direct(ctx, feed, sampleRate, d, az, el, pp.set, spatial.DirectParams{
+				Rolloff: p.Spatial.DistanceRolloff, AirAbsorption: p.Spatial.AirAbsorption,
+			})
+			if i > 0 {
+				<-turn[i-1]
+			}
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			for c := range out {
+				addInto(out[c], r[c])
+			}
+		}()
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+	if subOn {
+		addSubs(out, in, p, pp.pr)
+	}
+	return out, nil
 }
 
 // addSubs はサブウーファー経路を out(両耳)に足す。
@@ -620,22 +626,32 @@ func (e *Engine) reverbStage(ctx context.Context, pp *prepared, bus *lazyBus, ir
 	key := hashKey(paKey, total, pp.p.Venue.Preset, r.PreDelayMs, r.DecayScale, r.HighDampHz,
 		r.LowCoherence, r.LowDecayScale, r.LowLevelDb, r.LowCrossoverHz, r.HighDecayScale, r.HighDecayHz, active, sub)
 	return memo(e.cache, "reverb", key, func() ([][]float32, error) {
-		mono := radiatedMono(bus.get(), active, sub)
-		out := [][]float32{make([]float32, total), make([]float32, total)}
-		errs := make([]error, 2)
-		var wg sync.WaitGroup
-		for c := 0; c < 2; c++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				var y []float32
-				y, errs[c] = dsp.Convolve(ctx, mono, ir[c])
-				addInto(out[c], y)
-			}()
-		}
-		wg.Wait()
-		return out, errors.Join(errs...)
+		return reverbCompute(ctx, pp, bus.get(), ir, total)
 	})
+}
+
+// reverbCompute は、バス in から残響を計算する(会場IR ir で畳み込む)。長さは total。
+func reverbCompute(ctx context.Context, pp *prepared, in, ir [][]float32, total int) ([][]float32, error) {
+	sub := pp.p.Sub
+	active := subsActive(pp.p)
+	if !active {
+		sub = project.Sub{}
+	}
+	mono := radiatedMono(in, active, sub)
+	out := [][]float32{make([]float32, total), make([]float32, total)}
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for c := 0; c < 2; c++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var y []float32
+			y, errs[c] = dsp.Convolve(ctx, mono, ir[c])
+			addInto(out[c], y)
+		}()
+	}
+	wg.Wait()
+	return out, errors.Join(errs...)
 }
 
 // crowdStage は客席系統。曲頭からの絶対時刻で生成する。
