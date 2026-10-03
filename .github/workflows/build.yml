@@ -1,0 +1,109 @@
+name: Validate and build (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: Stable release tag; empty for CI and manual builds
+        type: string
+        default: ''
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            platform: windows/amd64
+            target: windows-amd64
+          - runner: macos-15-intel
+            platform: darwin/amd64
+            target: macos-amd64
+          - runner: macos-15
+            platform: darwin/arm64
+            target: macos-arm64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Install FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install ffmpeg --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            brew install ffmpeg
+          fi
+      - name: Verify audio tools
+        run: |
+          ffmpeg -version
+          ffprobe -version
+      - name: Test release tooling
+        run: python -m unittest discover -s scripts -p 'test_*.py' -v
+      - name: Set release version
+        if: inputs.release-tag != ''
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: python scripts/set-version.py "$RELEASE_TAG"
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Check and test frontend
+        working-directory: frontend
+        run: |
+          npm run check
+          npm test
+          npm run build
+      - name: Test and vet Go
+        run: |
+          go test ./... -count=1 -timeout 10m
+          go vet ./...
+      - name: Install matching Wails CLI
+        run: |
+          wails_version=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)
+          go install "github.com/wailsapp/wails/v2/cmd/wails@$wails_version"
+      - name: Build desktop app
+        env:
+          BUILD_PLATFORM: ${{ matrix.platform }}
+        run: wails build -clean -m -nosyncgomod -trimpath -platform "$BUILD_PLATFORM"
+      - name: Package desktop app
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: python scripts/package.py --target "$BUILD_TARGET"
+      - name: Upload desktop package
+        uses: actions/upload-artifact@v7
+        with:
+          name: TottemoLive-${{ matrix.target }}
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

@@ -103,3 +103,9 @@ M1 エンジンとCLI(済) → M2 Wails骨格と音作りパネル・プレビ�
 - コミットメッセージは日本語
 - 適切にブランチを切ること
 - devにマージする際はPRを立て自己レビューすること
+## CI/CD
+
+GitHub Actionsの `CI` と `Build and Release` は、両方とも `workflow_dispatch` で手動実行できる。
+共通の検証・ビルドは `.github/workflows/build.yml`。Windows x64、Mac Intel、Mac Apple Siliconを対象とする。
+`vMAJOR.MINOR.PATCH` タグのpushだけがGitHub Releasesへの公開を行い、手動実行はartifactの保存まで。
+操作と開発環境は `README.md`、配布物の導入とFFmpegの設定は `docs/INSTALL.md` を参照する。
