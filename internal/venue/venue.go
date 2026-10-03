@@ -35,37 +35,37 @@ var presets = []Preset{
 	{ID: "club", Name: "クラブ", WidthM: 8, DepthM: 10,
 		Speakers: speakers(2, 2),
 		Subs:     subs(1.2),
-		Reverb:   reverb(5, 9000, 1.2, 3),
+		Reverb:   reverb(5, 9000, 1.2, 3, 0.8),
 		RT60Sec:  0.35,
 		VolumeM3: 280, Q: 10},
 	{ID: "livehouse", Name: "ライブハウス", WidthM: 12, DepthM: 14,
 		Speakers: speakers(3, 2.5),
 		Subs:     subs(2),
-		Reverb:   reverb(8, 7000, 1.3, 3),
+		Reverb:   reverb(8, 7000, 1.3, 3, 0.75),
 		RT60Sec:  0.5,
 		VolumeM3: 840, Q: 10},
 	{ID: "hall", Name: "ホール", WidthM: 30, DepthM: 40,
 		Speakers: speakers(7, 6),
 		Subs:     subs(4),
-		Reverb:   reverb(25, 6500, 1.3, 3),
+		Reverb:   reverb(25, 6500, 1.3, 3, 0.65),
 		RT60Sec:  1.8,
 		VolumeM3: 14400, Q: 10},
 	{ID: "arena", Name: "アリーナ", WidthM: 80, DepthM: 70,
 		Speakers: speakers(12, 8),
 		Subs:     subs(7),
-		Reverb:   reverb(40, 8000, 1.3, 3),
+		Reverb:   reverb(40, 8000, 1.3, 3, 0.6),
 		RT60Sec:  2.8,
 		VolumeM3: 140000, Q: 10},
 	{ID: "outdoor", Name: "野外フェス", WidthM: 100, DepthM: 120,
 		Speakers: speakers(10, 6),
 		Subs:     subs(6),
-		Reverb:   reverb(90, 7000, 1.0, 0),
+		Reverb:   reverb(90, 7000, 1.0, 0, 0.8),
 		RT60Sec:  0.7,
 		VolumeM3: 1000000, Q: 10},
 	{ID: "dome", Name: "ドーム", WidthM: 120, DepthM: 100,
 		Speakers: speakers(18, 14),
 		Subs:     subs(10),
-		Reverb:   reverb(70, 5500, 1.4, 3),
+		Reverb:   reverb(70, 5500, 1.4, 3, 0.55),
 		RT60Sec:  3.8,
 		VolumeM3: 600000, Q: 10},
 }
@@ -87,13 +87,14 @@ func CriticalDistanceM(pr Preset, decayScale float64) float64 {
 	return 0.057 * math.Sqrt(pr.Q*pr.VolumeM3/(pr.RT60Sec*math.Max(decayScale, 0.05)))
 }
 
-// reverb は会場プリセットの残響の既定値。低域の残響は、左右の相関を1(自然な拡散音場)、
+// reverb は会場プリセットの残響の既定値。高域の残響は、境界周波数を4 kHz、長さの倍率を会場ごとに決める(大きい会場ほど高域が早く減衰する)。低域の残響は、左右の相関を1(自然な拡散音場)、
 // 境界周波数を250 Hzにして、低域の長さの倍率とレベルだけを会場ごとに決める
 // (開けた野外は低域がこもらないので 1.0 倍・0 dB)。
-func reverb(preDelayMs, highDampHz, lowDecayScale, lowLevelDb float64) project.Reverb {
+func reverb(preDelayMs, highDampHz, lowDecayScale, lowLevelDb, highDecayScale float64) project.Reverb {
 	return project.Reverb{
 		Mix: NominalMix, PreDelayMs: preDelayMs, DecayScale: 1, HighDampHz: highDampHz,
 		LowCoherence: 1, LowDecayScale: lowDecayScale, LowLevelDb: lowLevelDb, LowCrossoverHz: 250,
+		HighDecayScale: highDecayScale, HighDecayHz: 4000,
 	}
 }
 
@@ -159,6 +160,19 @@ func IRSeconds(pr Preset, r project.Reverb) float64 {
 	return pr.RT60Sec*r.DecayScale*math.Max(1, r.LowDecayScale)*irTailMargin + r.PreDelayMs*1e-3
 }
 
+// highDecayStages は、高域の残響が中域から highDecayScale 倍まで短くなる過程の段数(1オクターブを分けた数)。
+const highDecayStages = 3
+
+// highDecayEdges は、中高域を帯域に分ける周波数(Hz): highHz から1オクターブを highDecayStages 等分した境目。
+// 帯域は、境目の数 + 1 個(最初が中域、最後が highHz の2倍より上)。
+func highDecayEdges(highHz float64) []float64 {
+	edges := make([]float64, highDecayStages+1)
+	for k := range edges {
+		edges[k] = highHz * math.Pow(2, float64(k)/highDecayStages)
+	}
+	return edges
+}
+
 // IRの正規化に使う中域の範囲(Hz)。高域ダンプ(2 kHz以上)と低域の残響(境界250 Hz以下)の影響を受けにくい帯域。
 const (
 	normBandLoHz = 600
@@ -207,8 +221,13 @@ func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
 
 	h := fnv.New64a()
 	h.Write([]byte(pr.ID))
-	// 左右それぞれの独立な白色ノイズを、低域と中高域に分ける(LR4で分けると、足し合わせた振幅はフラットのまま)
-	var low, high [2][]float32
+	// 左右それぞれの独立な白色ノイズを、低域と、中高域のいくつかの帯域に分ける(LR4で順に分けると、足し合わせた
+	// 振幅はフラットのまま)。中高域は、HighDecayHz までを残響の長さ1倍の中域とし、そこから1オクターブかけて
+	// 段階的に短くして、HighDecayHz の2倍より上は HighDecayScale 倍にする(周波数ごとの残響時間の曲線を滑らかにする。
+	// 1か所で分けると、境界付近で中域の遅い成分が漏れて、高域の後期の減衰を支配してしまう)
+	edges := highDecayEdges(r.HighDecayHz)
+	var low [2][]float32
+	var bands [2][][]float32 // [チャンネル][帯域][サンプル]。帯域0が中域、最後が最高域
 	for c := 0; c < 2; c++ {
 		rng := rand.New(rand.NewSource(int64(h.Sum64()) + int64(c)*7919))
 		noise := make([]float32, n)
@@ -218,7 +237,19 @@ func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
 		low[c] = append([]float32(nil), noise...)
 		dsp.LR4LowPass(low[c], fs, r.LowCrossoverHz)
 		dsp.LR4HighPass(noise, fs, r.LowCrossoverHz)
-		high[c] = noise
+		for _, f := range edges {
+			part := append([]float32(nil), noise...)
+			dsp.LR4LowPass(part, fs, f)
+			dsp.LR4HighPass(noise, fs, f)
+			bands[c] = append(bands[c], part)
+		}
+		bands[c] = append(bands[c], noise)
+	}
+	// 帯域ごとの残響時間(中域を1として、段階的に highScale へ)
+	highScale := math.Min(math.Max(r.HighDecayScale, 0.05), 1)
+	bandRT := make([]float64, len(bands[0]))
+	for j := range bandRT {
+		bandRT[j] = rtMain * math.Pow(highScale, float64(j)/float64(len(edges)))
 	}
 	// 右の低域 = c × 左の低域 + √(1-c²) × 右の独立な低域(どちらも同じ強さなので、相関は c になる)
 	c := math.Min(math.Max(r.LowCoherence, 0), 1)
@@ -230,15 +261,23 @@ func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
 	out := make([][]float32, 2)
 	for ch := range out {
 		ir := make([]float32, pre+n)
-		for i := 0; i < n; i++ {
-			t := float64(i) / fs
-			envMain := math.Exp(-ln1000 * t / rtMain)
-			envLow := math.Exp(-ln1000 * t / rtLow)
-			if i < fade {
-				f := float64(i) / float64(fade)
-				envMain, envLow = envMain*f, envLow*f
+		for j, band := range bands[ch] { // 中高域: 帯域ごとの残響時間の減衰
+			k := -ln1000 / (bandRT[j] * fs)
+			for i := 0; i < n; i++ {
+				env := math.Exp(k * float64(i))
+				if i < fade {
+					env *= float64(i) / float64(fade)
+				}
+				ir[pre+i] += float32(float64(band[i]) * env)
 			}
-			ir[pre+i] = float32(float64(high[ch][i])*envMain + gLow*float64(low[ch][i])*envLow)
+		}
+		kLow := -ln1000 / (rtLow * fs) // 低域
+		for i := 0; i < n; i++ {
+			env := math.Exp(kLow * float64(i))
+			if i < fade {
+				env *= float64(i) / float64(fade)
+			}
+			ir[pre+i] += float32(gLow * float64(low[ch][i]) * env)
 		}
 		dsp.LowPass(fs, r.HighDampHz).Process(ir)
 		out[ch] = ir

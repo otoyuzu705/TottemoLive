@@ -607,7 +607,7 @@ func speakerFeed(bus [][]float32, i, count int) []float32 {
 
 // reverbStage はスピーカーから放射された音(radiatedMono)を会場IR(左右)で畳み込む。
 // 残響は距離減衰を掛ける前の信号で駆動する(拡散音場のレベルは距離に依らないため)。
-// 読むもの: 会場、reverb.preDelayMs / decayScale / highDampHz / low*(低域の残響)、
+// 読むもの: 会場、reverb.preDelayMs / decayScale / highDampHz / low*(低域の残響) / high*(高域の残響)、
 // sub.*(サブが有効か・レベル・クロスオーバー。サブの低域も会場を励起するので残響に入る)、PAの出力、長さ。
 // (reverb.mix はミックス段)
 func (e *Engine) reverbStage(ctx context.Context, pp *prepared, bus *lazyBus, ir [][]float32, paKey string, total int) ([][]float32, error) {
@@ -618,7 +618,7 @@ func (e *Engine) reverbStage(ctx context.Context, pp *prepared, bus *lazyBus, ir
 		sub = project.Sub{} // サブが無効なら、サブの設定は残響に影響しない(キーにも入れない)
 	}
 	key := hashKey(paKey, total, pp.p.Venue.Preset, r.PreDelayMs, r.DecayScale, r.HighDampHz,
-		r.LowCoherence, r.LowDecayScale, r.LowLevelDb, r.LowCrossoverHz, active, sub)
+		r.LowCoherence, r.LowDecayScale, r.LowLevelDb, r.LowCrossoverHz, r.HighDecayScale, r.HighDecayHz, active, sub)
 	return memo(e.cache, "reverb", key, func() ([][]float32, error) {
 		mono := radiatedMono(bus.get(), active, sub)
 		out := [][]float32{make([]float32, total), make([]float32, total)}
