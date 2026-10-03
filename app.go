@@ -341,6 +341,35 @@ func (a *App) RenderPreview(p project.Project) (PreviewResult, error) {
 	}, nil
 }
 
+// WindowResult は先行プレビュー(曲の一部だけを先に処理した結果)。URL が空なら、新しい要求に追い越されて中断された
+// (フロントは無視する)。StartSec は URL の音の先頭が曲頭から何秒の位置か、TotalSec は曲全体(残響の尾を含む)の長さ(秒)。
+type WindowResult struct {
+	URL      string  `json:"url"`
+	StartSec float64 `json:"startSec"`
+	TotalSec float64 `json:"totalSec"`
+}
+
+// RenderPreviewWindow は、startSec(曲頭からの秒)から約30秒ぶんだけを、曲全体と同じ処理で先にレンダリングする。
+// 曲全体の処理(RenderPreview)が終わるまでの間、シーク位置の周辺をすぐに聴けるようにするためのもの。
+// supersede が true なら、進行中の曲全体のプレビューを中断する(パラメーターが変わって、古い値の処理が不要になったとき)。
+// false なら、曲全体の処理はそのまま続ける(同じ値のまま、窓の外へシークしたとき)。
+// 新しい窓の要求が来ると、進行中の窓は中断され、中断された呼び出しは URL が空の結果とnilを返す。
+func (a *App) RenderPreviewWindow(p project.Project, startSec float64, supersede bool) (WindowResult, error) {
+	if supersede {
+		a.jobs.CancelKind("preview")
+	}
+	_, ctx, done := a.jobs.Begin(a.ctx, "previewWindow")
+	defer done()
+	w, err := a.engine.PreviewWindow(ctx, p, startSec)
+	if err != nil {
+		if ctx.Err() != nil {
+			return WindowResult{}, nil
+		}
+		return WindowResult{}, err
+	}
+	return WindowResult{URL: a.store.Put(audio.WAV16(w.Audio, w.SampleRate)), StartSec: w.StartSec, TotalSec: w.TotalSec}, nil
+}
+
 // RenderOriginal は曲全体の原音(A/B比較用)のURLを返す。ラウドネスはプレビューと同じ目標にそろえる。
 func (a *App) RenderOriginal(p project.Project) (string, error) {
 	_, ctx, done := a.jobs.Begin(a.ctx, "original")

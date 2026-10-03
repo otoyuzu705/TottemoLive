@@ -44,6 +44,22 @@ export namespace main {
 	        this.channels = source["channels"];
 	    }
 	}
+	export class WindowResult {
+	    url: string;
+	    startSec: number;
+	    totalSec: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new WindowResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.startSec = source["startSec"];
+	        this.totalSec = source["totalSec"];
+	    }
+	}
 
 }
 
