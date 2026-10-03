@@ -25,6 +25,25 @@
     }
   }
 
+  // PA出力(スピーカーに送る音)を重ねるか。選んだ設定は次回も使う
+  const PA_KEY = 'tottemolive.spectrumPA'
+  function loadShowPA(): boolean {
+    try {
+      return localStorage.getItem(PA_KEY) !== 'off'
+    } catch {
+      return true
+    }
+  }
+  let showPA = $state(loadShowPA())
+  function setShowPA(on: boolean) {
+    showPA = on
+    try {
+      localStorage.setItem(PA_KEY, on ? 'on' : 'off')
+    } catch {
+      // 保存できなくても動作には影響しない
+    }
+  }
+
   const DB_MIN = -80
   const DB_MAX = 0
   const DB_LINES = [0, -10, -20, -30, -40, -50, -60, -70, -80]
@@ -44,6 +63,9 @@
   const meter = new Meter(BAND_CENTERS.length)
   const bands = new Float32Array(BAND_CENTERS.length)
   const silence = new Float32Array(BAND_CENTERS.length).fill(DB_FLOOR)
+  const paBands = new Float32Array(BAND_CENTERS.length)
+  // いま重ねているPA出力があるか(フレームごとに更新)
+  let paShown = false
 
   const hint = $derived(
     !player.loaded.processed ? 'プレビューができると、再生した音のスペクトラムが表示されます' : !player.playing ? '再生するとスペクトラムが表示されます' : '',
@@ -68,6 +90,7 @@
       // 再生していないときは、読み取りをやめて静かに落とす(止めた直後の表示が残らないように)
       const live = player.playing && player.readBands(bands)
       meter.update(live ? bands : silence, dt)
+      paShown = showPA && live && player.readPA(paBands)
       draw()
       raf = requestAnimationFrame(frame)
     }
@@ -196,6 +219,29 @@
       g.restore()
     }
 
+    // PA出力(スピーカーに送る音)。全体の大きさを耳に届く出力にそろえてあるので、帯域ごとの差が音色の違いになる
+    if (paShown) {
+      g.strokeStyle = css('--warn')
+      g.fillStyle = css('--warn')
+      g.lineWidth = 2
+      if (style === 'bars') {
+        const barW = Math.max(2, slot - 3)
+        BAND_CENTERS.forEach((_, i) => {
+          if (paBands[i] <= DB_MIN) return
+          g.fillRect(centerX(i) - barW / 2 - 1, Math.round(yOf(paBands[i])) - 1, barW + 2, 3)
+        })
+      } else {
+        g.save()
+        g.beginPath()
+        g.rect(x0, y0, w, h)
+        g.clip()
+        g.beginPath()
+        smoothThrough(g, BAND_CENTERS.map((_, i) => ({ x: centerX(i), y: yOf(paBands[i]) })))
+        g.stroke()
+        g.restore()
+      }
+    }
+
     // 周波数ラベル
     g.textAlign = 'center'
     g.textBaseline = 'top'
@@ -222,7 +268,10 @@
       g.arc(x, y, 4, 0, Math.PI * 2)
       g.fill()
       const db = meter.level[hover]
-      const text = `${fmtHz(BAND_CENTERS[hover])}  ${db <= DB_FLOOR ? '−∞' : db.toFixed(1)} dB`
+      const paDb = paBands[hover]
+      const text =
+        `${fmtHz(BAND_CENTERS[hover])}  ${db <= DB_FLOOR ? '−∞' : db.toFixed(1)} dB` +
+        (paShown ? `  (PA ${paDb <= DB_FLOOR ? '−∞' : paDb.toFixed(1)})` : '')
       g.font = '12px sans-serif'
       const tw = g.measureText(text).width + 12
       const bx = Math.min(Math.max(x - tw / 2, x0), x0 + w - tw)
@@ -245,6 +294,10 @@
     <h2>
       スペクトラム<span class="sub"> 出力の1/3オクターブ(31帯域) · {player.mode === 'processed' ? '加工後' : '原音'}</span>
     </h2>
+    <label class="pa" title={player.pa ? 'スピーカーに送る音(PAの出力)を重ねます。全体の大きさは耳に届く音にそろえてあるので、帯域ごとの差が、距離・空気吸収・残響などによる音色の違いになります' : '加工後のプレビューができると使えます'}>
+      <input type="checkbox" checked={showPA} disabled={!player.pa} onchange={(e) => setShowPA(e.currentTarget.checked)} />
+      <i class="swatch"></i>PA出力を重ねる
+    </label>
     <div class="styles" role="group" aria-label="表示の種類">
       <button class:active={style === 'bars'} aria-pressed={style === 'bars'} onclick={() => chooseStyle('bars')}>バー</button>
       <button class:active={style === 'line'} aria-pressed={style === 'line'} onclick={() => chooseStyle('line')}>折れ線</button>
@@ -261,7 +314,7 @@
     {#if hint}<div class="hint">{hint}</div>{/if}
   </div>
   <div class="note">
-    縦軸は dB(0 dBFS の正弦波 = 0 dB)。{style === 'bars' ? 'バーは再生している音の帯域ごとの大きさ、白い線はピーク。' : '曲線は帯域ごとの大きさ、点線はピーク。マウスを乗せると周波数とレベルが読めます。'}
+    縦軸は dB(0 dBFS の正弦波 = 0 dB)。{player.pa && showPA ? '黄色がPA出力(スピーカーに送る音。全体の大きさは耳に届く音にそろえて表示)。' : ''}{style === 'bars' ? 'バーは再生している音の帯域ごとの大きさ、白い線はピーク。' : '曲線は帯域ごとの大きさ、点線はピーク。マウスを乗せると周波数とレベルが読めます。'}
   </div>
 </section>
 
@@ -269,6 +322,8 @@
   section { display: flex; flex-direction: column; height: 100%; min-height: 0; }
   .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
   .sub { font-weight: 400; margin-left: 8px; letter-spacing: 0; }
+  .pa { display: flex; align-items: center; gap: 5px; margin-left: auto; color: var(--muted); }
+  .swatch { width: 14px; height: 3px; background: var(--warn); display: inline-block; }
   .styles { display: flex; }
   .styles button { border-radius: 0; padding: 2px 10px; }
   .styles button:first-child { border-radius: 5px 0 0 5px; }
