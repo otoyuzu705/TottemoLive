@@ -194,6 +194,8 @@ export namespace project {
 	    }
 	}
 	export class PA {
+	    autoLevel: string;
+	    inputLufs: number;
 	    lowCutHz: number;
 	    lowShelfHz: number;
 	    lowShelfDb: number;
@@ -211,6 +213,8 @@ export namespace project {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.autoLevel = source["autoLevel"];
+	        this.inputLufs = source["inputLufs"];
 	        this.lowCutHz = source["lowCutHz"];
 	        this.lowShelfHz = source["lowShelfHz"];
 	        this.lowShelfDb = source["lowShelfDb"];
@@ -434,6 +438,8 @@ export namespace venue {
 	    subs: project.Speaker[];
 	    reverb: project.Reverb;
 	    rt60Sec: number;
+	    volumeM3: number;
+	    q: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Preset(source);
@@ -449,6 +455,8 @@ export namespace venue {
 	        this.subs = this.convertValues(source["subs"], project.Speaker);
 	        this.reverb = this.convertValues(source["reverb"], project.Reverb);
 	        this.rt60Sec = source["rt60Sec"];
+	        this.volumeM3 = source["volumeM3"];
+	        this.q = source["q"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
