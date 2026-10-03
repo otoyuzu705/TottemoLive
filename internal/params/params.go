@@ -46,6 +46,8 @@ func advanced(s ParamSpec) ParamSpec { s.Advanced = true; return s }
 // 残響の既定値(preDelayMs, highDampHz)は会場プリセットごとに上書きされる。
 var specs = []ParamSpec{
 	logScale(f("pa.lowCutHz", "低域カット", "pa", "Hz", 20, 200, 1, 35)),
+	logScale(f("pa.lowShelfHz", "低域シェルフ周波数", "pa", "Hz", 40, 400, 5, 120)),
+	f("pa.lowShelfDb", "低域シェルフ量", "pa", "dB", -12, 9, 0.5, 0),
 	logScale(f("pa.highShelfHz", "高域シェルフ周波数", "pa", "Hz", 2000, 12000, 100, 6000)),
 	f("pa.highShelfDb", "高域シェルフ量", "pa", "dB", -12, 6, 0.5, -3),
 	f("pa.compThresholdDb", "コンプ スレッショルド", "pa", "dB", -40, 0, 0.5, -18),

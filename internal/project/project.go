@@ -55,6 +55,8 @@ type Listener struct {
 
 type PA struct {
 	LowCutHz        float64 `json:"lowCutHz"`
+	LowShelfHz      float64 `json:"lowShelfHz"`
+	LowShelfDb      float64 `json:"lowShelfDb"`
 	HighShelfHz     float64 `json:"highShelfHz"`
 	HighShelfDb     float64 `json:"highShelfDb"`
 	CompThresholdDb float64 `json:"compThresholdDb"`

@@ -216,3 +216,25 @@ func TestHighShelfRange(t *testing.T) {
 		}
 	}
 }
+
+// 低域シェルフは -12〜+9 dB、40〜400 Hz に丸める。既定は 0 dB(何もしない)。
+func TestLowShelfRange(t *testing.T) {
+	p := project.New()
+	if p.PA.LowShelfDb != 0 || p.PA.LowShelfHz != 120 {
+		t.Errorf("defaults: %v dB @ %v Hz", p.PA.LowShelfDb, p.PA.LowShelfHz)
+	}
+	for in, want := range map[float64]float64{9: 9, 12: 9, 4.5: 4.5, -12: -12, -30: -12} {
+		q := project.New()
+		q.PA.LowShelfDb = in
+		q.PA.LowShelfHz = 1
+		q.Normalize()
+		if q.PA.LowShelfDb != want || q.PA.LowShelfHz != 40 {
+			t.Errorf("lowShelfDb %v -> %v (Hz %v), want %v / 40", in, q.PA.LowShelfDb, q.PA.LowShelfHz, want)
+		}
+	}
+	// 旧いプロジェクト(低域シェルフの項目が無い)は既定値で補われ、音が変わらない
+	old, err := project.Parse([]byte(`{"version":1,"pa":{"lowCutHz":50}}`))
+	if err != nil || old.PA.LowShelfDb != 0 {
+		t.Errorf("old project: %+v %v", old.PA, err)
+	}
+}
