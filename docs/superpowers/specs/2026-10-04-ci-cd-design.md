@@ -6,6 +6,7 @@ TottemoLiveの変更を自動検証し、WindowsとMacで利用できるデス�
 ユーザーは、CIでのテストと両OSのビルド、バージョンタグによる配布、利用手順の整備に同意した。
 FFmpeg／ffprobeは同梱せず、利用者が別途インストールする。
 Demucsは現在と同じ任意機能とする。
+追加要望として、CIと配布用ビルドの両方をworkflow_dispatchで手動実行できるようにする。
 
 ## 構成の選択
 
@@ -28,6 +29,7 @@ GitHub Actionsで各OSのネイティブビルドを行う。
 ## CDと成果物
 
 - vで始まるバージョンタグのpushをリリースの起点とする。
+- 配布用ビルドにもworkflow_dispatchを設定する。手動実行では選択したブランチ／タグから全対象をビルドし、成果物とチェックサムをActionsのartifactとして保存する。手動実行によるGitHub Releasesへの公開は行わない。
 - CIと同じ検証を通過したビルドだけを配布する。
 - WindowsはTottemoLive.exeを含むZIP、Macは.appを含むアーキテクチャ別ZIPとして配布する。
 - ZIPには利用手順を添付し、成果物のSHA-256チェックサムを公開する。
