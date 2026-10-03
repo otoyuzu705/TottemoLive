@@ -3,6 +3,7 @@ import * as Go from '../../wailsjs/go/main/App'
 import { EventsOn, OnFileDrop } from '../../wailsjs/runtime/runtime'
 import type { main, params, project, venue } from '../../wailsjs/go/models'
 import { player } from './player.svelte'
+import { parseBandSeries, type BandSeries } from './spectrum'
 
 const PREVIEW_DEBOUNCE_MS = 200
 
@@ -270,15 +271,30 @@ class AppState {
     const mine = ++this.seq
     this.busy++
     try {
-      const url = await Go.RenderPreview($state.snapshot(p) as project.Project)
-      // 空文字は、新しい要求に追い越されて中断された印。古い結果は捨てる
-      if (!url || mine !== this.seq) return
+      const r = await Go.RenderPreview($state.snapshot(p) as project.Project)
+      // URLが空なのは、新しい要求に追い越されて中断された印。古い結果は捨てる
+      if (!r.url || mine !== this.seq) return
+      // PA出力の帯域レベル(スペクトラム表示で耳に届く音に重ねる)。取れなくても再生は続ける
+      const pa = await this.fetchPASeries(r)
+      if (mine !== this.seq) return
       // 再生位置は保ったまま差し替える
-      await player.load('processed', url, true)
+      await player.load('processed', r.url, true)
+      player.pa = pa
     } catch (e) {
       if (mine === this.seq) this.fail(e)
     } finally {
       this.busy--
+    }
+  }
+
+  private async fetchPASeries(r: main.PreviewResult): Promise<BandSeries | null> {
+    if (!r.bandsUrl) return null
+    try {
+      const res = await fetch(r.bandsUrl)
+      if (!res.ok) return null
+      return parseBandSeries(await res.arrayBuffer(), r)
+    } catch {
+      return null
     }
   }
 

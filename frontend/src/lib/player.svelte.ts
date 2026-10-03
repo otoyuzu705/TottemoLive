@@ -1,6 +1,6 @@
 // プレビュー再生。<audio> に加工後・原音(曲全体)の2本を切り替えて流す。
 // 新しいプレビューが届いたら、再生位置を保ったまま音源を差し替える。
-import { bandLevels } from './spectrum'
+import { bandLevels, seriesAt, type BandSeries } from './spectrum'
 
 export type Mode = 'processed' | 'original'
 
@@ -33,6 +33,8 @@ class Player {
   /** 再生音量(dB)。聞こえ方だけを変える(再計算なし)。プレビュー専用で、書き出しには反映されない */
   volumeDb = $state(loadVolume())
   muted = $state(false)
+  /** 加工後のプレビューに対応する、PA出力の帯域レベル(スペクトラム表示で重ねる)。無ければ null */
+  pa = $state.raw<BandSeries | null>(null)
 
   private audio = new Audio()
   private blobs: Partial<Record<Mode, string>> = {}
@@ -95,6 +97,16 @@ class Player {
     if (!this.analyser || !this.ctx || !this.freqBuf) return false
     this.analyser.getFloatFrequencyData(this.freqBuf)
     bandLevels(this.freqBuf, this.ctx.sampleRate, this.analyser.fftSize, out)
+    return true
+  }
+
+  /**
+   * 再生位置(曲頭からの秒)でのPA出力の帯域レベルを out に書く(全体の大きさは耳に届く出力にそろえてある)。
+   * 加工後を聴いていないとき、または帯域レベルが無いときは false(原音にはPAが掛かっていないため)。
+   */
+  readPA(out: Float32Array): boolean {
+    if (this.mode !== 'processed' || !this.pa) return false
+    seriesAt(this.pa, this.position, out)
     return true
   }
 
