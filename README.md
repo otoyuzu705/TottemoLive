@@ -40,6 +40,13 @@ vMAJOR.MINOR.PATCH形式のタグからビルドした場合は、そのタグ�
 ブランチからの手動ビルドでは、選択したリビジョンのwails.jsonの値を使用します。
 成果物の保持期間は14日です。
 
+### 初回リリース前の確認
+
+mainへの取り込み後、最初の実リリースを公開する前に、Release Buildをworkflow_dispatchで一度実行してください。
+Windows x64・Intel Mac・Apple Silicon Macの全ビルドと、チェックサム作成まで成功したことを確認します。
+失敗した場合はWindowsのFFmpeg導入、Macランナーの選択、Wailsのビルド手順のログを確認し、修正後に再実行してください。
+この手動確認ではGitHub Releasesの作成・公開・編集は行いません。
+
 ### ご自身でリリースする
 
 1. 公開対象のコミットに、v1.2.3のような`vMAJOR.MINOR.PATCH`形式のタグを付けます。

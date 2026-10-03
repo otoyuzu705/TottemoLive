@@ -103,6 +103,7 @@ M1 エンジンとCLI(済) → M2 Wails骨格と音作りパネル・プレビ�
 - コミットメッセージは日本語
 - 適切にブランチを切ること
 - devにマージする際はPRを立て自己レビューすること
+
 ## CI/CD
 
 GitHub Actionsの `CI` と `Release Build` は、両方とも `workflow_dispatch` で手動実行できる。
