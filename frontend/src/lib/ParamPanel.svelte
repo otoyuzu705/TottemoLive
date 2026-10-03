@@ -10,7 +10,6 @@
     sub: 'サブウーファー',
     spatial: '空間',
     reverb: '残響',
-    crowd: '客席',
     master: 'マスター',
   }
 
