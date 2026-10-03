@@ -211,3 +211,18 @@ func TestBuildIRLowLevel(t *testing.T) {
 		}
 	}
 }
+
+// MaxDistanceM は、会場内の最も遠いスピーカー(横に開いた位置)と客席の隅の距離を覆う。
+func TestMaxDistanceCoversTheRoom(t *testing.T) {
+	for _, pr := range List() {
+		max := MaxDistanceM(pr)
+		for _, sp := range pr.Speakers {
+			for _, x := range []float64{-pr.WidthM / 2, pr.WidthM / 2} {
+				d := math.Sqrt((x-sp.X)*(x-sp.X) + pr.DepthM*pr.DepthM + sp.Z*sp.Z)
+				if d > max {
+					t.Errorf("%s: distance %.1f m exceeds MaxDistanceM %.1f m", pr.ID, d, max)
+				}
+			}
+		}
+	}
+}

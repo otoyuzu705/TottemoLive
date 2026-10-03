@@ -132,7 +132,10 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 	// (IRの長さがキーに入ると、残響を動かしたとき直接音・客席まで再計算になるため)。
 	// 実際の長さ(曲 + 現在のIRの尾)へは、ミックスの前に切り詰める
 	total := songLen + maxTailSamples(pp.pr)
-	outLen := songLen + len(ir[0])
+	// 残響は直接音より先に届かない: 最初に届く音(いちばん近いメインスピーカーの直接音)から残響が始まる。
+	// プリディレイはそこからの遅れになる
+	revDelay := firstArrivalSamples(p)
+	outLen := songLen + revDelay + len(ir[0])
 
 	// 4つの系統は互いに独立なので並列に回す
 	var direct, reverb, crowdSig [][]float32
@@ -170,7 +173,7 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 		return nil, err
 	}
 
-	out := mix(p, crop(direct, outLen), crop(reverb, outLen), crop(crowdSig, outLen))
+	out := mix(p, crop(direct, outLen), crop(reverb, outLen-revDelay), crop(crowdSig, outLen), revDelay)
 	master(out, sampleRate, p.Output)
 	steps.done()
 	res := &Result{Audio: out, SampleRate: sampleRate, LUFS: dsp.IntegratedLUFS(out, sampleRate)}
@@ -194,6 +197,8 @@ func maxTailSamples(pr venue.Preset) int {
 	decay, _ := params.Find("reverb.decayScale")
 	low, _ := params.Find("reverb.lowDecayScale")
 	sec := venue.IRSeconds(pr, project.Reverb{PreDelayMs: pre.Max, DecayScale: decay.Max, LowDecayScale: low.Max})
+	// 直接音と残響の伝搬遅延(最大の距離ぶん)も見込む
+	sec += venue.MaxDistanceM(pr) / spatial.SpeedOfSound
 	return int(math.Ceil(sec * sampleRate))
 }
 
@@ -557,7 +562,7 @@ func (e *Engine) crowdStage(ctx context.Context, pp *prepared, total int) ([][]f
 
 // mix は直接音・残響・客席をそれぞれのレベルで足す。
 // 直接音は (1-reverb.mix)、残響は reverb.mix で配分する。
-func mix(p project.Project, direct, reverb, crowdSig [][]float32) [][]float32 {
+func mix(p project.Project, direct, reverb, crowdSig [][]float32, reverbDelay int) [][]float32 {
 	dg := float32(dsp.DbToLin(p.Spatial.DirectLevelDb) * (1 - p.Reverb.Mix))
 	rg := float32(p.Reverb.Mix)
 	cg := float32(dsp.DbToLin(p.Crowd.LevelDb))
@@ -565,10 +570,28 @@ func mix(p project.Project, direct, reverb, crowdSig [][]float32) [][]float32 {
 	for c := range out {
 		out[c] = make([]float32, len(direct[c]))
 		for i := range out[c] {
-			out[c][i] = direct[c][i]*dg + reverb[c][i]*rg + crowdSig[c][i]*cg
+			out[c][i] = direct[c][i]*dg + crowdSig[c][i]*cg
+		}
+		// 残響は、リスナーに最初の音が届く時刻(reverbDelay)から始まる
+		for i, v := range reverb[c] {
+			if j := i + reverbDelay; j < len(out[c]) {
+				out[c][j] += v * rg
+			}
 		}
 	}
 	return out
+}
+
+// firstArrivalSamples は、リスナーに最初に届く音(いちばん近いメインスピーカーからの直接音)の伝搬遅延(サンプル)。
+func firstArrivalSamples(p project.Project) int {
+	first := -1
+	for _, s := range p.Venue.Speakers {
+		_, _, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
+		if n := spatial.DelaySamples(d, sampleRate); first < 0 || n < first {
+			first = n
+		}
+	}
+	return max(first, 0)
 }
 
 // master はラウドネスを目標値に合わせ、トゥルーピークリミッタで仕上げる。

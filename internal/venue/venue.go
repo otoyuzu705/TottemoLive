@@ -123,6 +123,14 @@ const (
 	irFadeInMs   = 3.0               // 立ち上がりのクリックを避ける
 )
 
+// MaxDistanceM は、この会場の中でスピーカーとリスナーが離れうる最大の距離(m)の上限。
+// 客席の端からステージの反対側の端まで(横幅の全体 × 奥行き + ステージ分)と、スピーカーの高さを見込む。
+// 伝搬遅延で出力が伸びる長さの上限(各段の出力長の固定)に使う。
+func MaxDistanceM(pr Preset) float64 {
+	const stageDepthM, maxHeightM = 6, 30
+	return math.Sqrt(pr.WidthM*pr.WidthM + (pr.DepthM+stageDepthM)*(pr.DepthM+stageDepthM) + maxHeightM*maxHeightM)
+}
+
 // IRSeconds は BuildIR が作る会場IRの長さ(秒、プリディレイを含む)。
 // 低域の残響が中高域より長いとき(lowDecayScale > 1)は、そちらに合わせる。
 func IRSeconds(pr Preset, r project.Reverb) float64 {
