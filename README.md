@@ -11,11 +11,11 @@ FFmpeg／ffprobeが必須で、Demucsによるステム分離は任意です。
 | ワークフロー | 自動実行 | 手動実行 | 成果物 |
 | --- | --- | --- | --- |
 | CI（ci.yml） | main／devへのpushとPR | workflow_dispatch | Ubuntuで検証・ビルド。Linux検証用tar.gzとSHA-256 |
-| Release Build（release.yml） | v*タグのpush | workflow_dispatch | Ubuntuで検証後、Windows／Macの配布ZIPとSHA-256。成果物の保存まで |
+| Release Build（release.yml） | GitHub Releasesの公開 | workflow_dispatch | Ubuntuで検証後、Windows／Macの配布ZIPとSHA-256。成果物の保存まで |
 | Release desktop build（build.yml） | リリース用ワークフローから呼び出す | 直接実行せずRelease Buildを使用 | Windows／Macの検証・ビルド・ZIP作成 |
 
 通常CIはubuntu-24.04だけで実行します。
-Windows x64、Mac Intel、Mac Apple Siliconのネイティブビルドは、タグまたは手動で起動するリリース用ワークフローに限定します。
+Windows x64、Mac Intel、Mac Apple Siliconのネイティブビルドは、Releasesの公開または手動で起動するリリース用ワークフローに限定します。
 リリース用ワークフローも最初にUbuntuのCIを実行し、その成功後に各OSのビルドを開始します。
 型チェック、フロントエンドのテスト、Goのテストとvet、配布スクリプトのテストに成功した成果物を保存します。
 CIにもFFmpeg／ffprobeを導入するため、音声処理のテストを実行できます。
@@ -35,26 +35,24 @@ workflow_dispatchは、ワークフローファイルが既定ブランチに存
 CIの成果物はTottemoLive-ci-linux-amd64です。Ubuntuでのビルド検証用tar.gzで、Windows／Mac向けの配布物ではありません。
 LinuxのGUIビルドにはGTK 3とWebKitGTK 4.1を使用し、Goのテスト・vetとWailsビルドにwebkit2_41タグを付けます。
 
-タグ・手動実行ともGitHub Releasesの作成・公開は行いません。
+リリース公開・手動実行ともGitHub Releasesの作成・公開は行いません。
 vMAJOR.MINOR.PATCH形式のタグからビルドした場合は、そのタグをアプリの製品バージョンに使用します。
 ブランチからの手動ビルドでは、選択したリビジョンのwails.jsonの値を使用します。
 成果物の保持期間は14日です。
 
 ### ご自身でリリースする
 
-1. 公開対象のコミットに、v1.2.3のような`vMAJOR.MINOR.PATCH`形式のタグを付けてpushします。
+1. 公開対象のコミットに、v1.2.3のような`vMAJOR.MINOR.PATCH`形式のタグを付けます。
+   タグはGitHubのReleases画面で作成しても、ローカルで作成してpushしても構いません。
    先頭ゼロ、プレリリースやビルドメタデータ付きのタグには対応していません。
+2. GitHubのReleases画面でタグを選び、リリースノートを入力して、ご自身で公開します。
+3. 公開イベント（release: published）でRelease Buildが開始します。
+4. ビルド成功後、ActionsのArtifactsから各OSの配布ZIPとTottemoLive-release-checksums内のSHA256SUMSをダウンロードできます。
 
-   ```sh
-   git tag v1.2.3
-   git push origin v1.2.3
-   ```
-
-2. Release Buildの成功を確認し、Artifactsから各OSの配布ZIPとTottemoLive-release-checksums内のSHA256SUMSをダウンロードします。
-3. GitHubのReleases画面で新しいリリースを作成し、同じタグを選びます。
-4. 3つの配布ZIPとSHA256SUMSを添付し、リリースノートを入力して、ご自身で公開します。
-
-CIはビルドと成果物の保存までを担当します。draftの作成や公開も含め、GitHub Releasesの操作は自動化しません。
+CIはビルドとActionsへの成果物保存までを担当します。GitHub Releasesへのファイル添付・編集・公開は行いません。
+公開済みリリースの画面からもダウンロードできるようにする場合は、必要なファイルをご自身で添付してください。
+タグのpushだけではRelease Buildは起動しません。draftの保存も対象外で、公開時に起動します。
+ビルドが失敗しても、すでに公開したリリースの状態は変更しません。
 ワークフローの権限はcontents: readだけを使用します。
 
 Windowsのコード署名、AppleのDeveloper ID署名・公証、自動更新は含みません。

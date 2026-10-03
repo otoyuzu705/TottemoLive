@@ -1,8 +1,8 @@
 name: Release Build
 
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -19,7 +19,7 @@ jobs:
     needs: validate
     uses: ./.github/workflows/build.yml
     with:
-      release-tag: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+      release-tag: ${{ github.event.release.tag_name || (startsWith(github.ref, 'refs/tags/v') && github.ref_name || '') }}
   checksums:
     name: Prepare release checksums
     needs: build

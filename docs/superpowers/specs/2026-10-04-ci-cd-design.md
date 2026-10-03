@@ -3,7 +3,7 @@
 ## 目的と合意した範囲
 
 TottemoLiveの変更を自動検証し、WindowsとMacで利用できるデスクトップアプリをGitHub Releasesから配布する。
-ユーザーは、CIでのテストとビルド、バージョンタグによる配布、利用手順の整備に同意した。
+ユーザーは、CIでのテストとビルド、ユーザーが公開したリリースに対応する成果物の作成、利用手順の整備に同意した。
 後続の合意により、通常CIはUbuntuを使い、Windows／Macのネイティブビルドはリリース用ワークフローだけで実行する。
 FFmpeg／ffprobeは同梱せず、利用者が別途インストールする。
 Demucsは現在と同じ任意機能とする。
@@ -31,14 +31,14 @@ GitHub Actionsの通常CIはUbuntuで検証とLinuxのGUIビルドを行う。
 
 ## CDと成果物
 
-- vで始まるバージョンタグのpushをリリースの起点とする。
+- ユーザーによるGitHub Releasesの公開（release: published）を配布ビルドの起点とする。タグのpushだけでは起動しない。
 - リリース用ワークフローだけでWindows x64、Mac Intel、Mac Apple Siliconをビルドする。
-- タグ・手動実行とも、まずUbuntuのCIを再利用して検証し、成功後にOS別ビルドを開始する。
+- リリース公開・手動実行とも、まずUbuntuのCIを再利用して検証し、成功後にOS別ビルドを開始する。
 - 配布用ビルドにもworkflow_dispatchを設定する。手動実行では選択したブランチ／タグから全対象をビルドし、成果物とチェックサムをActionsのartifactとして保存する。手動実行によるGitHub Releasesへの公開は行わない。
 - CIと同じ検証を通過したビルドだけを配布する。
 - WindowsはTottemoLive.exeを含むZIP、Macは.appを含むアーキテクチャ別ZIPとして配布する。
 - ZIPには利用手順を添付し、成果物のSHA-256チェックサムを公開する。
-- 全対象のビルドが成功したらSHA256SUMSをartifactとして保存する。タグ付けとGitHub Releasesの作成・添付・公開はユーザーが手作業で行う。
+- 全対象のビルドが成功したらSHA256SUMSをartifactとして保存する。タグ付けとGitHub Releasesの作成・公開はユーザーが手作業で行う。公開後にビルドし、成果物はActionsに保存する。Releasesへの添付は必要に応じてユーザーが行う。ビルド失敗時も公開済みリリースを変更しない。
 - 全ジョブを読み取り権限とし、CIはGitHub Releasesを作成・公開しない。
 - アプリのバージョン表記をタグに合わせる。追跡対象の設定ファイルはCI内の変更をコミットしない。
 - GitHubへのpush、タグ作成、実際の公開は今回のローカル実装に含めない。
