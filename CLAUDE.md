@@ -110,5 +110,6 @@ GitHub Actionsの `CI` と `Release Build` は、両方とも `workflow_dispatch
 通常CIは `.github/workflows/ci.yml` でUbuntuだけを使って検証・GUIビルドする。
 Windows x64、Mac Intel、Mac Apple Siliconのネイティブビルドは、リリース用の `.github/workflows/build.yml` に限定する。
 リリース用ワークフローは、まずUbuntuのCIを再利用して実行し、成功後に各OSをビルドする。
-GitHub Releasesの公開イベントと手動実行でビルドとartifact保存まで。タグのpushだけでは配布ビルドしない。タグ付け、GitHub Releasesの作成・添付・公開はユーザーが行う。
+タグ付けとGitHub Releasesの作成・公開はユーザーが行う。公開イベントではビルド・artifact保存後、ZIPとSHA256SUMSをそのリリースのAssetsへ添付する。
+手動実行はartifact保存まで。タグのpushだけでは配布ビルドしない。Assets添付ジョブだけcontents: writeを持ち、リリースの公開状態や本文は変更しない。
 操作と開発環境は `README.md`、配布物の導入とFFmpegの設定は `docs/INSTALL.md` を参照する。

@@ -11,7 +11,7 @@ FFmpeg／ffprobeが必須で、Demucsによるステム分離は任意です。
 | ワークフロー | 自動実行 | 手動実行 | 成果物 |
 | --- | --- | --- | --- |
 | CI（ci.yml） | main／devへのpushとPR | workflow_dispatch | Ubuntuで検証・ビルド。Linux検証用tar.gzとSHA-256 |
-| Release Build（release.yml） | GitHub Releasesの公開 | workflow_dispatch | Ubuntuで検証後、Windows／Macの配布ZIPとSHA-256。成果物の保存まで |
+| Release Build（release.yml） | GitHub Releasesの公開 | workflow_dispatch | Ubuntuで検証後、Windows／Macの配布ZIPとSHA-256。公開イベントではRelease Assetsへ添付 |
 | Release desktop build（build.yml） | リリース用ワークフローから呼び出す | 直接実行せずRelease Buildを使用 | Windows／Macの検証・ビルド・ZIP作成 |
 
 通常CIはubuntu-24.04だけで実行します。
@@ -35,7 +35,8 @@ workflow_dispatchは、ワークフローファイルが既定ブランチに存
 CIの成果物はTottemoLive-ci-linux-amd64です。Ubuntuでのビルド検証用tar.gzで、Windows／Mac向けの配布物ではありません。
 LinuxのGUIビルドにはGTK 3とWebKitGTK 4.1を使用し、Goのテスト・vetとWailsビルドにwebkit2_41タグを付けます。
 
-リリース公開・手動実行ともGitHub Releasesの作成・公開は行いません。
+リリースの作成・公開はユーザーが行います。公開イベントでは、ビルド成功後にZIPとSHA256SUMSをそのリリースのAssetsへ自動添付します。
+手動実行はActionsのArtifactsへの保存までで、Release Assetsには添付しません。
 vMAJOR.MINOR.PATCH形式のタグからビルドした場合は、そのタグをアプリの製品バージョンに使用します。
 ブランチからの手動ビルドでは、選択したリビジョンのwails.jsonの値を使用します。
 成果物の保持期間は14日です。
@@ -54,13 +55,15 @@ Windows x64・Intel Mac・Apple Silicon Macの全ビルドと、チェックサ�
    先頭ゼロ、プレリリースやビルドメタデータ付きのタグには対応していません。
 2. GitHubのReleases画面でタグを選び、リリースノートを入力して、ご自身で公開します。
 3. 公開イベント（release: published）でRelease Buildが開始します。
-4. ビルド成功後、ActionsのArtifactsから各OSの配布ZIPとTottemoLive-release-checksums内のSHA256SUMSをダウンロードできます。
+4. 全対象のビルドとチェックサム検証が成功すると、3つの配布ZIPとSHA256SUMSが、そのリリースのAssetsに自動添付されます。
+5. 利用者はリリースページのAssetsから対象OSのZIPを直接ダウンロードできます。
 
-CIはビルドとActionsへの成果物保存までを担当します。GitHub Releasesへのファイル添付・編集・公開は行いません。
-公開済みリリースの画面からもダウンロードできるようにする場合は、必要なファイルをご自身で添付してください。
+CIはビルド・Actionsへの成果物保存・公開済みリリースへのファイル添付を担当します。リリースの作成、公開状態やリリースノートの変更は行いません。
+ビルド・添付完了まではAssetsに配布ZIPが揃っていないため、Release Buildの成功を確認してください。
+同名のAssetsがすでにある場合は上書きせず失敗します。再実行する場合は、対象ファイルを確認して必要なAssetsを手動で削除してから、添付ジョブを再実行してください。
 タグのpushだけではRelease Buildは起動しません。draftの保存も対象外で、公開時に起動します。
 ビルドが失敗しても、すでに公開したリリースの状態は変更しません。
-ワークフローの権限はcontents: readだけを使用します。
+ビルド・検証はcontents: read、Assetsへの添付ジョブだけcontents: writeを使用します。
 
 Windowsのコード署名、AppleのDeveloper ID署名・公証、自動更新は含みません。
 
