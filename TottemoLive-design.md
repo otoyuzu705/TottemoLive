@@ -115,8 +115,8 @@ type ParamSpec struct {
 
 | グループ | Path | 表示名 | 範囲 | 既定値 | 読む段 |
 | --- | --- | --- | --- | --- | --- |
-| PA質感 | `pa.autoLevel` | PA入力のレベルをそろえる | off / on | on | PA |
-| | `pa.inputLufs` | PA入力の基準ラウドネス | -30〜-8 LUFS | -20 | PA |
+| PA質感 | `pa.autoLevel` | 入力レベル合わせ(PA入力のレベルをそろえる) | off / on | on | PA |
+| | `pa.inputLufs` | 入力の基準LUFS(PA入力の基準ラウドネス) | -30〜-8 LUFS | -20 | PA |
 | | `pa.lowCutHz` | 低域カット | 20〜200 Hz | 35 | PA |
 | | `pa.lowShelfHz` | 低域シェルフ周波数 | 40〜400 Hz | 120 | PA |
 | | `pa.lowShelfDb` | 低域シェルフ量 | -12〜+9 dB | 0 | PA |

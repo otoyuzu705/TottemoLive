@@ -45,9 +45,9 @@ func advanced(s ParamSpec) ParamSpec { s.Advanced = true; return s }
 // specs が音作りパラメーターの表。範囲と既定値は設計書の表が正で、M2で聴きながら見直す前提の仮の値。
 // 残響の既定値(preDelayMs, highDampHz)は会場プリセットごとに上書きされる。
 var specs = []ParamSpec{
-	{Path: "pa.autoLevel", Label: "PA入力のレベルをそろえる", Group: "pa", Kind: KindEnum,
+	{Path: "pa.autoLevel", Label: "入力レベル合わせ", Group: "pa", Kind: KindEnum,
 		Options: []string{"off", "on"}, Default: 1, Scale: "linear"},
-	f("pa.inputLufs", "PA入力の基準ラウドネス", "pa", "LUFS", -30, -8, 0.5, -20),
+	f("pa.inputLufs", "入力の基準LUFS", "pa", "LUFS", -30, -8, 0.5, -20),
 	logScale(f("pa.lowCutHz", "低域カット", "pa", "Hz", 20, 200, 1, 35)),
 	logScale(f("pa.lowShelfHz", "低域シェルフ周波数", "pa", "Hz", 40, 400, 5, 120)),
 	f("pa.lowShelfDb", "低域シェルフ量", "pa", "dB", -12, 9, 0.5, 0),
