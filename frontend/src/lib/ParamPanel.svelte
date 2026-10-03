@@ -128,7 +128,7 @@
               {@const v = valueOf(spec)}
               <div class="row" class:changed={changed(spec)}>
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <span class="label" ondblclick={() => reset(spec)} title="ダブルクリックで既定値に戻す">
+                <span class="label" ondblclick={() => reset(spec)} title={`${spec.label}(ダブルクリックで既定値に戻す)`}>
                   <i class="dot"></i>{spec.label}
                 </span>
                 {#if spec.kind === 'enum'}
@@ -181,7 +181,8 @@
   .reset { background: none; border-color: transparent; color: var(--muted); }
   .row { display: grid; grid-template-columns: 9.5em 1fr auto 3em; align-items: center; gap: 6px; padding: 2px 0; }
   .row > select { grid-column: 2 / 5; }
-  .label { color: var(--muted); position: relative; padding-left: 10px; cursor: default; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 長い名前は2行までに折り返す(はみ出す分は省略し、全文はツールチップで読める) */
+  .label { color: var(--muted); position: relative; padding-left: 10px; cursor: default; line-height: 1.25; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; word-break: break-all; }
   .changed .label { color: var(--text); }
   .dot { position: absolute; left: 0; top: 50%; width: 5px; height: 5px; margin-top: -2.5px; border-radius: 50%; background: transparent; }
   .changed .dot { background: var(--warn); }
