@@ -144,3 +144,16 @@ test('parseBandSeries: バイト数が合うときだけ作る', () => {
   assert.equal(parseBandSeries(buf, { bands: 3, frames: 3, hopSec: 0.05, offsetDb: 0 }), null)
   assert.equal(parseBandSeries(buf, { bands: 0, frames: 2, hopSec: 0.05, offsetDb: 0 }), null)
 })
+
+test('seriesAt: 再生音量(gainDb)をPA出力にも掛ける', () => {
+  const s = makeSeries(2, 1, () => -30, 6)
+  const out = new Float32Array(1)
+  seriesAt(s, 0.05, out, -6)
+  assert.ok(Math.abs(out[0] - -30) < 1e-5, `offset 6 + gain -6: ${out[0]}`)
+  seriesAt(s, 0.05, out, 0)
+  assert.ok(Math.abs(out[0] - -24) < 1e-5)
+  // 無音は音量を上げても無音のまま
+  const silent = makeSeries(2, 1, () => DB_FLOOR, 0)
+  seriesAt(silent, 0.05, out, 6)
+  assert.equal(out[0], DB_FLOOR)
+})

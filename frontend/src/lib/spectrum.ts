@@ -113,9 +113,10 @@ export interface BandSeries {
 
 /**
  * 時刻 t(秒)のPA出力の帯域レベルを、前後のフレームの間を dB のまま線形に補間して out に書く。
- * offsetDb を足す(全体の大きさを耳に届く出力にそろえるため)。曲の外(最後のフレームより後)は無音。
+ * offsetDb(全体の大きさを耳に届く出力にそろえる)と gainDb(再生音量。耳の位置の表示は音量つまみの後を測るので、
+ * PA出力にも同じ音量を掛けて比べられるようにする)を足す。曲の外(最後のフレームより後)は無音。
  */
-export function seriesAt(series: BandSeries, t: number, out: Float32Array): Float32Array {
+export function seriesAt(series: BandSeries, t: number, out: Float32Array, gainDb = 0): Float32Array {
   const pos = t / series.hopSec
   const f0 = Math.floor(pos)
   if (f0 < 0 || f0 >= series.frames || series.frames === 0) return out.fill(DB_FLOOR)
@@ -125,7 +126,7 @@ export function seriesAt(series: BandSeries, t: number, out: Float32Array): Floa
     const a = series.data[f0 * series.bands + i]
     const b = series.data[f1 * series.bands + i]
     const db = a + (b - a) * frac
-    out[i] = db <= DB_FLOOR ? DB_FLOOR : Math.max(DB_FLOOR, db + series.offsetDb)
+    out[i] = db <= DB_FLOOR ? DB_FLOOR : Math.max(DB_FLOOR, db + series.offsetDb + gainDb)
   }
   return out
 }
