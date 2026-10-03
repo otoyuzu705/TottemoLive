@@ -54,6 +54,9 @@ type Listener struct {
 }
 
 type PA struct {
+	// AutoLevel("off" / "on")が on のとき、音源ゲイン後の合計の統合ラウドネスを InputLufs にそろえてからPAを通す。
+	AutoLevel       string  `json:"autoLevel"`
+	InputLufs       float64 `json:"inputLufs"`
 	LowCutHz        float64 `json:"lowCutHz"`
 	LowShelfHz      float64 `json:"lowShelfHz"`
 	LowShelfDb      float64 `json:"lowShelfDb"`

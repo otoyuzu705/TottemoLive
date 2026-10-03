@@ -120,7 +120,11 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 
 	// 2. 処理
 	steps := newSteps(prog, StageProcess, len(srcs)+5)
-	pa, err := e.paStage(ctx, p, srcs, steps)
+	level, err := e.inputLevelStage(ctx, p, srcs)
+	if err != nil {
+		return nil, err
+	}
+	pa, err := e.paStage(ctx, p, srcs, level, steps)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +136,10 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 	// (IRの長さがキーに入ると、残響を動かしたとき直接音・客席まで再計算になるため)。
 	// 実際の長さ(曲 + 現在のIRの尾)へは、ミックスの前に切り詰める
 	total := songLen + maxTailSamples(pp.pr)
-	outLen := songLen + len(ir[0])
+	// 残響は直接音より先に届かない: 最初に届く音(いちばん近いメインスピーカーの直接音)から残響が始まる。
+	// プリディレイはそこからの遅れになる
+	revDelay := firstArrivalSamples(p)
+	outLen := songLen + revDelay + len(ir[0])
 
 	// 4つの系統は互いに独立なので並列に回す
 	var direct, reverb, crowdSig [][]float32
@@ -170,7 +177,7 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 		return nil, err
 	}
 
-	out := mix(p, crop(direct, outLen), crop(reverb, outLen), crop(crowdSig, outLen))
+	out := mix(mixGainsFor(p, pp.pr), crop(direct, outLen), crop(reverb, outLen-revDelay), crop(crowdSig, outLen), revDelay)
 	master(out, sampleRate, p.Output)
 	steps.done()
 	res := &Result{Audio: out, SampleRate: sampleRate, LUFS: dsp.IntegratedLUFS(out, sampleRate)}
@@ -194,6 +201,8 @@ func maxTailSamples(pr venue.Preset) int {
 	decay, _ := params.Find("reverb.decayScale")
 	low, _ := params.Find("reverb.lowDecayScale")
 	sec := venue.IRSeconds(pr, project.Reverb{PreDelayMs: pre.Max, DecayScale: decay.Max, LowDecayScale: low.Max})
+	// 直接音と残響の伝搬遅延(最大の距離ぶん)も見込む
+	sec += venue.MaxDistanceM(pr) / spatial.SpeedOfSound
 	return int(math.Ceil(sec * sampleRate))
 }
 
@@ -273,9 +282,78 @@ type paResult struct {
 	bufs [][][]float32
 }
 
-// paStage は音源ごとに(ゲイン → PA質感)を並列に処理する。
-// 読むもの: 音源のゲイン、pa.* の全項目、上流のデコード結果。
-func (e *Engine) paStage(ctx context.Context, p project.Project, srcs []stageOut, steps *steps) (paResult, error) {
+// inputLevel はPA入力のレベル合わせの結果。AlignDb はPAの前に全音源へ共通に掛けるゲイン(dB)。
+// Preloaded は、レベルの測定のためにデコードした音源(PA段が再利用する。使ったら nil にする)。
+type inputLevel struct {
+	AlignDb   float64
+	preloaded [][][]float32
+}
+
+// inputLevelStage は、PAの前にレベルをそろえるゲインを求める。PAのコンプ(スレッショルド -18 dBFS など)と歪みは
+// 入力の絶対レベルで効くので、曲のマスターの音量が違うと同じ設定でも効き方が変わり、『別の曲にそのまま適用できる』
+// 音作りプリセットにならない。そこで、音源ゲイン後の合計(バス)の統合ラウドネスを pa.inputLufs にそろえる。
+// 全音源に共通のゲインなので、ボーカルと伴奏などの音量バランスは変わらない。音源のゲインは、その上の微調整になる。
+//
+// 読むもの: 音源のファイルとゲインだけ(測定したラウドネスはキャッシュし、pa.inputLufs の変更ではデコードし直さない)。
+// 測定のためにデコードしたときは、その結果をPA段に渡して二重にデコードしない。
+func (e *Engine) inputLevelStage(ctx context.Context, p project.Project, srcs []stageOut) (inputLevel, error) {
+	if p.PA.AutoLevel != "on" {
+		return inputLevel{}, nil
+	}
+	parts := make([]any, 0, 2*len(srcs))
+	for i, s := range srcs {
+		parts = append(parts, s.key, p.Sources[i].GainDb)
+	}
+	key := hashKey(parts...)
+	var preloaded [][][]float32
+	lufs, err := memo(e.cache, "inputLevel", key, func() (float64, error) {
+		bufs := make([][][]float32, len(srcs))
+		errs := make([]error, len(srcs))
+		var wg sync.WaitGroup
+		for i := range srcs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				bufs[i], errs[i] = srcs[i].load(ctx)
+			}()
+		}
+		wg.Wait()
+		if err := errors.Join(errs...); err != nil {
+			return 0, err
+		}
+		sum := make([][]float32, 2)
+		n := 0
+		for _, b := range bufs {
+			n = max(n, len(b[0]))
+		}
+		for c := range sum {
+			sum[c] = make([]float32, n)
+			for i, b := range bufs {
+				g := float32(dsp.DbToLin(p.Sources[i].GainDb))
+				for k, v := range b[c] {
+					sum[c][k] += v * g
+				}
+			}
+		}
+		preloaded = bufs
+		return dsp.IntegratedLUFS(sum, sampleRate), nil
+	})
+	if err != nil {
+		return inputLevel{}, err
+	}
+	lv := inputLevel{preloaded: preloaded}
+	if !math.IsInf(lufs, 0) && !math.IsNaN(lufs) {
+		lv.AlignDb = math.Min(math.Max(p.PA.InputLufs-lufs, -maxAlignDb), maxAlignDb)
+	}
+	return lv, nil
+}
+
+// maxAlignDb は、PA入力のレベル合わせで掛けるゲインの絶対値の上限(dB)。極端に小さい・大きい音源で破綻しないように。
+const maxAlignDb = 40
+
+// paStage は音源ごとに(ゲイン + レベル合わせ → PA質感)を並列に処理する。
+// 読むもの: 音源のゲイン、レベル合わせのゲイン、pa.* の全項目(autoLevel・inputLufs を含む)、上流のデコード結果。
+func (e *Engine) paStage(ctx context.Context, p project.Project, srcs []stageOut, level inputLevel, steps *steps) (paResult, error) {
 	res := paResult{bufs: make([][][]float32, len(srcs))}
 	keys := make([]string, len(srcs))
 	errs := make([]error, len(srcs))
@@ -285,13 +363,18 @@ func (e *Engine) paStage(ctx context.Context, p project.Project, srcs []stageOut
 		go func() {
 			defer wg.Done()
 			defer steps.done()
-			keys[i] = hashKey(srcs[i].key, p.Sources[i].GainDb, p.PA)
+			keys[i] = hashKey(srcs[i].key, p.Sources[i].GainDb, level.AlignDb, p.PA)
 			res.bufs[i], errs[i] = memo(e.cache, fmt.Sprintf("pa:%d", i), keys[i], func() ([][]float32, error) {
-				buf, err := srcs[i].load(ctx) // デコード結果は他で使わないので、その場で処理してよい
-				if err != nil {
-					return nil, err
+				var buf [][]float32
+				if level.preloaded != nil && level.preloaded[i] != nil {
+					buf, level.preloaded[i] = level.preloaded[i], nil // レベルの測定でデコード済み
+				} else {
+					var err error
+					if buf, err = srcs[i].load(ctx); err != nil { // デコード結果は他で使わないので、その場で処理してよい
+						return nil, err
+					}
 				}
-				applyPA(buf, sampleRate, p.Sources[i].GainDb, p.PA)
+				applyPA(buf, sampleRate, p.Sources[i].GainDb+level.AlignDb, p.PA)
 				return buf, nil
 			})
 		}()
@@ -376,7 +459,7 @@ func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, pa
 	if !subsActive(p) {
 		subs = nil
 	}
-	key := hashKey(paKey, total, p.Listener, p.Venue.Speakers, subs, sub,
+	key := hashKey(paKey, total, p.Venue.Preset, p.Listener, p.Venue.Speakers, subs, sub,
 		p.Spatial.HrirSet, p.Spatial.DistanceRolloff, p.Spatial.AirAbsorption)
 	return memo(e.cache, "direct", key, func() ([][]float32, error) {
 		spk := p.Venue.Speakers
@@ -423,7 +506,7 @@ func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, pa
 			return nil, err
 		}
 		if subOn {
-			addSubs(out, in, p)
+			addSubs(out, in, p, pp.pr)
 		}
 		return out, nil
 	})
@@ -434,7 +517,7 @@ func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, pa
 // サブごとに距離減衰・遅延を掛けて両耳に同じ信号として足す。
 // 左右の合計にするのは、中央に定位した低音(左右同じ信号)がメイン2本でコヒーレントに足される大きさ(+6 dB)に
 // 合わせるため。これで levelDb 0 が「メインの低域と同じ大きさ」になる。
-func addSubs(out, bus [][]float32, p project.Project) {
+func addSubs(out, bus [][]float32, p project.Project, pr venue.Preset) {
 	mono := make([]float32, len(bus[0]))
 	for i := range mono {
 		mono[i] = bus[0][i] + bus[1][i]
@@ -444,19 +527,31 @@ func addSubs(out, bus [][]float32, p project.Project) {
 	for i := range mono {
 		mono[i] *= g
 	}
-	// メインの代表距離(サブの遅延をメインに合わせる基準)
-	mains := 0.0
-	for _, s := range p.Venue.Speakers {
+	extra := subAlignDelays(p, pr)
+	for i, s := range p.Venue.Subs {
 		_, _, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
-		mains += d / float64(len(p.Venue.Speakers))
-	}
-	for _, s := range p.Venue.Subs {
-		_, _, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
-		sig := spatial.Sub(mono, sampleRate, d, mains, p.Spatial.DistanceRolloff)
+		sig := spatial.Sub(mono, sampleRate, d, extra[i], p.Spatial.DistanceRolloff)
 		for c := range out {
 			addInto(out[c], sig)
 		}
 	}
+}
+
+// subAlignReference は、サブをメインに時間合わせする基準点(現場のFOH: 客席の中央、奥行きの半分、耳の高さ)。
+func subAlignReference(pr venue.Preset) [3]float64 {
+	return [3]float64{0, pr.DepthM / 2, 1.2}
+}
+
+// subAlignDelays は、サブごとの追加の遅延(サンプル)。座席には依らず、会場とスピーカー・サブの位置で決まる。
+func subAlignDelays(p project.Project, pr venue.Preset) []int {
+	pos := func(sp []project.Speaker) [][3]float64 {
+		out := make([][3]float64, len(sp))
+		for i, s := range sp {
+			out[i] = [3]float64{s.X, s.Y, s.Z}
+		}
+		return out
+	}
+	return spatial.SubAlignDelays(subAlignReference(pr), pos(p.Venue.Speakers), pos(p.Venue.Subs), sampleRate)
 }
 
 // subsActive はサブウーファー経路が有効か(有効にしてあり、サブが1台以上ある)。
@@ -555,20 +650,56 @@ func (e *Engine) crowdStage(ctx context.Context, pp *prepared, total int) ([][]f
 	})
 }
 
-// mix は直接音・残響・客席をそれぞれのレベルで足す。
-// 直接音は (1-reverb.mix)、残響は reverb.mix で配分する。
-func mix(p project.Project, direct, reverb, crowdSig [][]float32) [][]float32 {
-	dg := float32(dsp.DbToLin(p.Spatial.DirectLevelDb) * (1 - p.Reverb.Mix))
-	rg := float32(p.Reverb.Mix)
-	cg := float32(dsp.DbToLin(p.Crowd.LevelDb))
+// mixGains は、ミックスの3本のゲイン(線形)。
+type mixGains struct{ direct, reverb, crowd float32 }
+
+// mixGainsFor は、直接音・残響・客席のゲインを決める。
+//
+// 直接音: spatial.directLevelDb だけ(距離による大きさは、スピーカーごとの距離減衰で既に掛かっている)。
+// 残響: 会場の物理的な値を基準にする。残響(拡散音場)の大きさは、リスナーの位置に依らず一定で、直接音は
+// 距離に応じて変わる。両者が等しくなる距離が臨界距離で、会場の容積・残響時間・PAの指向係数から決まる
+// (venue.CriticalDistanceM)。そこで、残響のゲインを「臨界距離にいるときの、メイン全部の直接音のゲインの和」にする。
+// すると、臨界距離より近い席では直接音が主役、遠い席では残響が主役になり、会場による違いも出る。
+// reverb.mix は、その上の補正で、基準値(venue.NominalMix)のときに物理的な値、0 で残響なし、1 で約 +9 dB。
+// (直接音を (1 - mix) で薄める従来のクロスフェードはやめた。全体の音量はラウドネス調整で決まる)
+func mixGainsFor(p project.Project, pr venue.Preset) mixGains {
+	dc := venue.CriticalDistanceM(pr, p.Reverb.DecayScale)
+	reverb := float64(len(p.Venue.Speakers)) * spatial.Gain(dc, p.Spatial.DistanceRolloff) * p.Reverb.Mix / venue.NominalMix
+	return mixGains{
+		direct: float32(dsp.DbToLin(p.Spatial.DirectLevelDb)),
+		reverb: float32(reverb),
+		crowd:  float32(dsp.DbToLin(p.Crowd.LevelDb)),
+	}
+}
+
+// mix は直接音・残響・客席を、それぞれのゲインで足す。
+func mix(g mixGains, direct, reverb, crowdSig [][]float32, reverbDelay int) [][]float32 {
 	out := make([][]float32, 2)
 	for c := range out {
 		out[c] = make([]float32, len(direct[c]))
 		for i := range out[c] {
-			out[c][i] = direct[c][i]*dg + reverb[c][i]*rg + crowdSig[c][i]*cg
+			out[c][i] = direct[c][i]*g.direct + crowdSig[c][i]*g.crowd
+		}
+		// 残響は、リスナーに最初の音が届く時刻(reverbDelay)から始まる
+		for i, v := range reverb[c] {
+			if j := i + reverbDelay; j < len(out[c]) {
+				out[c][j] += v * g.reverb
+			}
 		}
 	}
 	return out
+}
+
+// firstArrivalSamples は、リスナーに最初に届く音(いちばん近いメインスピーカーからの直接音)の伝搬遅延(サンプル)。
+func firstArrivalSamples(p project.Project) int {
+	first := -1
+	for _, s := range p.Venue.Speakers {
+		_, _, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
+		if n := spatial.DelaySamples(d, sampleRate); first < 0 || n < first {
+			first = n
+		}
+	}
+	return max(first, 0)
 }
 
 // master はラウドネスを目標値に合わせ、トゥルーピークリミッタで仕上げる。

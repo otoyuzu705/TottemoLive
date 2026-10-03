@@ -101,12 +101,13 @@ class Player {
   }
 
   /**
-   * 再生位置(曲頭からの秒)でのPA出力の帯域レベルを out に書く(全体の大きさは耳に届く出力にそろえてある)。
+   * 再生位置(曲頭からの秒)でのPA出力の帯域レベルを out に書く(全体の大きさは耳に届く出力にそろえてあり、再生音量も反映する)。
    * 加工後を聴いていないとき、または帯域レベルが無いときは false(原音にはPAが掛かっていないため)。
    */
   readPA(out: Float32Array): boolean {
     if (this.mode !== 'processed' || !this.pa) return false
-    seriesAt(this.pa, this.position, out)
+    // 耳の位置のアナライザーは音量(GainNode)の後ろなので、PA出力にも同じ音量を掛ける(ミュート中は無音)
+    seriesAt(this.pa, this.position, out, this.muted ? -200 : this.volumeDb)
     return true
   }
 

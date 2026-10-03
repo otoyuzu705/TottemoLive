@@ -25,39 +25,49 @@ type Preset struct {
 	Subs     []project.Speaker `json:"subs"`
 	Reverb   project.Reverb    `json:"reverb"`  // 残響パラメーターの既定値
 	RT60Sec  float64           `json:"rt60Sec"` // 会場IRの残響時間(decayScale=1)
+	// VolumeM3 は会場の容積(m³)、Q はPAの指向係数(無指向で1。ホーンやラインアレイで約10)。
+	// 臨界距離(直接音と残響が同じ大きさになる距離)を決める。
+	VolumeM3 float64 `json:"volumeM3"`
+	Q        float64 `json:"q"`
 }
 
 var presets = []Preset{
 	{ID: "club", Name: "クラブ", WidthM: 8, DepthM: 10,
 		Speakers: speakers(2, 2),
 		Subs:     subs(1.2),
-		Reverb:   reverb(0.2, 5, 9000, 1.2, 3),
-		RT60Sec:  0.35},
+		Reverb:   reverb(5, 9000, 1.2, 3),
+		RT60Sec:  0.35,
+		VolumeM3: 280, Q: 10},
 	{ID: "livehouse", Name: "ライブハウス", WidthM: 12, DepthM: 14,
 		Speakers: speakers(3, 2.5),
 		Subs:     subs(2),
-		Reverb:   reverb(0.25, 8, 7000, 1.3, 3),
-		RT60Sec:  0.5},
+		Reverb:   reverb(8, 7000, 1.3, 3),
+		RT60Sec:  0.5,
+		VolumeM3: 840, Q: 10},
 	{ID: "hall", Name: "ホール", WidthM: 30, DepthM: 40,
 		Speakers: speakers(7, 6),
 		Subs:     subs(4),
-		Reverb:   reverb(0.35, 25, 6500, 1.3, 3),
-		RT60Sec:  1.8},
+		Reverb:   reverb(25, 6500, 1.3, 3),
+		RT60Sec:  1.8,
+		VolumeM3: 14400, Q: 10},
 	{ID: "arena", Name: "アリーナ", WidthM: 80, DepthM: 70,
 		Speakers: speakers(12, 8),
 		Subs:     subs(7),
-		Reverb:   reverb(0.35, 40, 8000, 1.3, 3),
-		RT60Sec:  2.8},
+		Reverb:   reverb(40, 8000, 1.3, 3),
+		RT60Sec:  2.8,
+		VolumeM3: 140000, Q: 10},
 	{ID: "outdoor", Name: "野外フェス", WidthM: 100, DepthM: 120,
 		Speakers: speakers(10, 6),
 		Subs:     subs(6),
-		Reverb:   reverb(0.12, 90, 7000, 1.0, 0),
-		RT60Sec:  0.7},
+		Reverb:   reverb(90, 7000, 1.0, 0),
+		RT60Sec:  0.7,
+		VolumeM3: 1000000, Q: 10},
 	{ID: "dome", Name: "ドーム", WidthM: 120, DepthM: 100,
 		Speakers: speakers(18, 14),
 		Subs:     subs(10),
-		Reverb:   reverb(0.4, 70, 5500, 1.4, 3),
-		RT60Sec:  3.8},
+		Reverb:   reverb(70, 5500, 1.4, 3),
+		RT60Sec:  3.8,
+		VolumeM3: 600000, Q: 10},
 }
 
 // subs はステージ前の床の左右(中心から ±x m)に置く2発のサブウーファー。
@@ -65,12 +75,24 @@ func subs(x float64) []project.Speaker {
 	return []project.Speaker{{ID: "SubL", X: -x, Y: 1, Z: 0.3}, {ID: "SubR", X: x, Y: 1, Z: 0.3}}
 }
 
+// NominalMix は reverb.mix の基準値。この値のとき、残響のレベルは会場の物理的な値(臨界距離で直接音と同じ大きさ)になる。
+// 会場ごとの残響の多さの違いは、容積・残響時間・指向係数から決まる臨界距離で表すので、
+// 会場プリセットの既定値はすべてこの値にする。reverb.mix は、その上の補正(0で無し、1で約+9 dB)になる。
+const NominalMix = 0.35
+
+// CriticalDistanceM は臨界距離(m): 直接音と残響の大きさが等しくなる、スピーカーからの距離。
+// 0.057·√(Q·V / RT60)(Sabineの式から。V は容積、RT60 は残響時間、Q は指向係数)。
+// decayScale で残響を長くすると臨界距離は短くなる(残響が相対的に増える)。
+func CriticalDistanceM(pr Preset, decayScale float64) float64 {
+	return 0.057 * math.Sqrt(pr.Q*pr.VolumeM3/(pr.RT60Sec*math.Max(decayScale, 0.05)))
+}
+
 // reverb は会場プリセットの残響の既定値。低域の残響は、左右の相関を1(自然な拡散音場)、
 // 境界周波数を250 Hzにして、低域の長さの倍率とレベルだけを会場ごとに決める
 // (開けた野外は低域がこもらないので 1.0 倍・0 dB)。
-func reverb(mix, preDelayMs, highDampHz, lowDecayScale, lowLevelDb float64) project.Reverb {
+func reverb(preDelayMs, highDampHz, lowDecayScale, lowLevelDb float64) project.Reverb {
 	return project.Reverb{
-		Mix: mix, PreDelayMs: preDelayMs, DecayScale: 1, HighDampHz: highDampHz,
+		Mix: NominalMix, PreDelayMs: preDelayMs, DecayScale: 1, HighDampHz: highDampHz,
 		LowCoherence: 1, LowDecayScale: lowDecayScale, LowLevelDb: lowLevelDb, LowCrossoverHz: 250,
 	}
 }
@@ -123,10 +145,43 @@ const (
 	irFadeInMs   = 3.0               // 立ち上がりのクリックを避ける
 )
 
+// MaxDistanceM は、この会場の中でスピーカーとリスナーが離れうる最大の距離(m)の上限。
+// 客席の端からステージの反対側の端まで(横幅の全体 × 奥行き + ステージ分)と、スピーカーの高さを見込む。
+// 伝搬遅延で出力が伸びる長さの上限(各段の出力長の固定)に使う。
+func MaxDistanceM(pr Preset) float64 {
+	const stageDepthM, maxHeightM = 6, 30
+	return math.Sqrt(pr.WidthM*pr.WidthM + (pr.DepthM+stageDepthM)*(pr.DepthM+stageDepthM) + maxHeightM*maxHeightM)
+}
+
 // IRSeconds は BuildIR が作る会場IRの長さ(秒、プリディレイを含む)。
 // 低域の残響が中高域より長いとき(lowDecayScale > 1)は、そちらに合わせる。
 func IRSeconds(pr Preset, r project.Reverb) float64 {
 	return pr.RT60Sec*r.DecayScale*math.Max(1, r.LowDecayScale)*irTailMargin + r.PreDelayMs*1e-3
+}
+
+// IRの正規化に使う中域の範囲(Hz)。高域ダンプ(2 kHz以上)と低域の残響(境界250 Hz以下)の影響を受けにくい帯域。
+const (
+	normBandLoHz = 600
+	normBandHiHz = 1400
+)
+
+// midBandEnergy は、左右のIRの中域(normBandLoHz〜normBandHiHz)のエネルギーの合計。
+func midBandEnergy(ir [][]float32, fs float64) float64 {
+	total := 0.0
+	for _, ch := range ir {
+		x := append([]float32(nil), ch...)
+		dsp.LR4HighPass(x, fs, normBandLoHz)
+		dsp.LR4LowPass(x, fs, normBandHiHz)
+		for _, v := range x {
+			total += float64(v) * float64(v)
+		}
+	}
+	return total
+}
+
+// normBandTarget は、チャンネルあたりのエネルギー1の白色IRが、中域に持つエネルギー(帯域幅 / ナイキスト周波数)。
+func normBandTarget(fs float64) float64 {
+	return (normBandHiHz - normBandLoHz) / (fs / 2)
 }
 
 // BuildIR は会場IR(左右)を作る。r.DecayScale で残響の長さ、r.HighDampHz で高域ダンプ、
@@ -140,7 +195,8 @@ func IRSeconds(pr Preset, r project.Reverb) float64 {
 //   - 残響の長さ r.LowDecayScale: 実際の会場は低域ほど長く残る
 //   - レベル r.LowLevelDb
 //
-// 左右合計のエネルギーを1にそろえるので、残響の長さを変えても音量は変わらない。
+// 中域のエネルギー密度をそろえる(上のIR正規化の説明を参照)ので、残響の長さ・高域ダンプ・低域の残響を変えても、
+// 残響の中域のレベルは変わらない。
 func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
 	rtMain := pr.RT60Sec * r.DecayScale
 	rtLow := rtMain * r.LowDecayScale
@@ -172,7 +228,6 @@ func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
 
 	gLow := dsp.DbToLin(r.LowLevelDb)
 	out := make([][]float32, 2)
-	total := 0.0
 	for ch := range out {
 		ir := make([]float32, pre+n)
 		for i := 0; i < n; i++ {
@@ -186,13 +241,14 @@ func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
 			ir[pre+i] = float32(float64(high[ch][i])*envMain + gLow*float64(low[ch][i])*envLow)
 		}
 		dsp.LowPass(fs, r.HighDampHz).Process(ir)
-		for _, v := range ir {
-			total += float64(v) * float64(v)
-		}
 		out[ch] = ir
 	}
-	if total > 0 {
-		g := float32(1 / math.Sqrt(total/2))
+	// 中域(normBandLoHz〜normBandHiHz)のエネルギー密度が、エネルギー1の白色IRと同じになるようにそろえる。
+	// 全体のエネルギーでそろえると、高域ダンプで高域を削るほど中域が持ち上がり、低域のレベルを上げるほど
+	// 中域が下がってしまう(つまみが直感どおりに効かない)。中域を基準にすれば、高域ダンプ・低域の残響
+	// ・残響の長さは、残響の中域のレベルを変えずに、それぞれの帯域だけを変える
+	if e := midBandEnergy(out, fs) / float64(len(out)); e > 0 {
+		g := float32(math.Sqrt(normBandTarget(fs) / e))
 		for _, ir := range out {
 			for i := range ir {
 				ir[i] *= g

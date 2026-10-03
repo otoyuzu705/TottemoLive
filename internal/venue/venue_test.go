@@ -60,15 +60,15 @@ func TestBuildIR(t *testing.T) {
 	if len(ir) != 2 || len(ir[0]) != len(ir[1]) {
 		t.Fatal("stereo IR expected")
 	}
-	// 左右合計のエネルギーが1
+	// 中域のエネルギー密度が、白色IR(チャンネルあたりエネルギー1)と同じ
+	if got, want := midBandEnergy(ir, sr)/2, normBandTarget(sr); math.Abs(10*math.Log10(got/want)) > 0.05 {
+		t.Errorf("mid band energy %.4f, want %.4f", got, want)
+	}
 	e := 0.0
 	for _, c := range ir {
 		for _, v := range c {
 			e += float64(v) * float64(v)
 		}
-	}
-	if math.Abs(e/2-1) > 1e-3 {
-		t.Errorf("energy %v", e/2)
 	}
 	// プリディレイぶんは無音
 	pre := int(r.PreDelayMs * 1e-3 * sr)
@@ -199,15 +199,86 @@ func TestBuildIRLowLevel(t *testing.T) {
 	if d := bandEnergyDb(b[0], 2000) - bandEnergyDb(a[0], 2000); math.Abs(d) > 0.5 {
 		t.Errorf("mid band moved by %.1f dB", d)
 	}
+	// 低域のレベルを動かしても、中域の基準は動かない(中域でそろえるため)
 	for _, ir := range [][][]float32{a, b} {
-		e := 0.0
-		for _, ch := range ir {
-			for _, v := range ch {
-				e += float64(v) * float64(v)
+		if got, want := midBandEnergy(ir, 48000)/2, normBandTarget(48000); math.Abs(10*math.Log10(got/want)) > 0.05 {
+			t.Errorf("mid band energy %.4f, want %.4f", got, want)
+		}
+	}
+}
+
+// MaxDistanceM は、会場内の最も遠いスピーカー(横に開いた位置)と客席の隅の距離を覆う。
+func TestMaxDistanceCoversTheRoom(t *testing.T) {
+	for _, pr := range List() {
+		max := MaxDistanceM(pr)
+		for _, sp := range pr.Speakers {
+			for _, x := range []float64{-pr.WidthM / 2, pr.WidthM / 2} {
+				d := math.Sqrt((x-sp.X)*(x-sp.X) + pr.DepthM*pr.DepthM + sp.Z*sp.Z)
+				if d > max {
+					t.Errorf("%s: distance %.1f m exceeds MaxDistanceM %.1f m", pr.ID, d, max)
+				}
 			}
 		}
-		if math.Abs(e/2-1) > 1e-3 {
-			t.Errorf("energy %v", e/2)
+	}
+}
+
+// 高域ダンプ・残響の長さ・低域の長さを変えても、残響の中域のレベルは変わらない。ダンプは高域だけを変える。
+func TestBuildIRNormalizesMidBand(t *testing.T) {
+	pr, _ := Get("arena")
+	base := BuildIR(pr, pr.Reverb, 48000)
+	mid0 := midBandEnergy(base, 48000)
+	hi0 := bandEnergyDb(base[0], 8000)
+	for name, mod := range map[string]func(*project.Reverb){
+		"highDamp 2000":  func(r *project.Reverb) { r.HighDampHz = 2000 },
+		"highDamp 16000": func(r *project.Reverb) { r.HighDampHz = 16000 },
+		"decay 0.5":      func(r *project.Reverb) { r.DecayScale = 0.5 },
+		"low decay 2.5":  func(r *project.Reverb) { r.LowDecayScale = 2.5 },
+		"low level +12":  func(r *project.Reverb) { r.LowLevelDb = 12 },
+	} {
+		r := pr.Reverb
+		mod(&r)
+		ir := BuildIR(pr, r, 48000)
+		if d := 10 * math.Log10(midBandEnergy(ir, 48000)/mid0); math.Abs(d) > 0.05 {
+			t.Errorf("%s: mid band moved by %.2f dB", name, d)
+		}
+	}
+	// ダンプを強めると、高域だけが下がる(中域が持ち上がらない)
+	r := pr.Reverb
+	r.HighDampHz = 2000
+	if d := bandEnergyDb(BuildIR(pr, r, 48000)[0], 8000) - hi0; d > -3 {
+		t.Errorf("8 kHz band should drop with a strong damp, moved %.1f dB", d)
+	}
+}
+
+// 臨界距離: 大きく残響の長い会場ほど遠く、残響を長くすると短くなる。典型的な値の範囲に収まる。
+func TestCriticalDistance(t *testing.T) {
+	want := map[string][2]float64{ // 会場: 臨界距離の妥当な範囲(m)
+		"club": {3, 8}, "livehouse": {5, 11}, "hall": {10, 25}, "arena": {30, 55}, "dome": {55, 100}, "outdoor": {100, 300},
+	}
+	var last float64
+	for _, id := range []string{"club", "livehouse", "hall", "arena", "dome"} {
+		pr, _ := Get(id)
+		dc := CriticalDistanceM(pr, 1)
+		if r := want[id]; dc < r[0] || dc > r[1] {
+			t.Errorf("%s: critical distance %.1f m, expected within %v", id, dc, r)
+		}
+		if dc <= last {
+			t.Errorf("%s: critical distance %.1f m should grow with the venue size", id, dc)
+		}
+		last = dc
+		if CriticalDistanceM(pr, 1.2) >= dc || CriticalDistanceM(pr, 0.5) <= dc {
+			t.Errorf("%s: longer decay must shorten the critical distance", id)
+		}
+	}
+	out, _ := Get("outdoor")
+	arena, _ := Get("arena")
+	if CriticalDistanceM(out, 1) <= CriticalDistanceM(arena, 1)*2 {
+		t.Error("an open-air venue should have a much larger critical distance")
+	}
+	// 会場プリセットの残響量の既定値はすべて基準値(会場の違いは臨界距離で表す)
+	for _, pr := range List() {
+		if pr.Reverb.Mix != NominalMix {
+			t.Errorf("%s: mix %v, want the nominal %v", pr.ID, pr.Reverb.Mix, NominalMix)
 		}
 	}
 }
