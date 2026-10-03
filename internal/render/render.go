@@ -368,11 +368,19 @@ func applyPA(buf [][]float32, sr int, gainDb float64, pa project.PA) {
 // (spatial.directLevelDb はミックス段が読む)
 func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, paKey string, total int) ([][]float32, error) {
 	p := pp.p
-	key := hashKey(paKey, total, p.Listener, p.Venue.Speakers, p.Venue.Subs, p.Sub,
+	sub := p.Sub
+	if !subsActive(p) {
+		sub = project.Sub{} // サブが無効なら、サブの設定と位置は直接音に影響しない(キーにも入れない)
+	}
+	subs := p.Venue.Subs
+	if !subsActive(p) {
+		subs = nil
+	}
+	key := hashKey(paKey, total, p.Listener, p.Venue.Speakers, subs, sub,
 		p.Spatial.HrirSet, p.Spatial.DistanceRolloff, p.Spatial.AirAbsorption)
 	return memo(e.cache, "direct", key, func() ([][]float32, error) {
 		spk := p.Venue.Speakers
-		subOn := p.Sub.Enabled == "on" && len(p.Venue.Subs) > 0
+		subOn := subsActive(p)
 		in := bus.get()
 		out := [][]float32{make([]float32, total), make([]float32, total)}
 		// スピーカーごとに並列に計算し、できた順ではなくスピーカーの順に足し込む。
@@ -451,6 +459,46 @@ func addSubs(out, bus [][]float32, p project.Project) {
 	}
 }
 
+// subsActive はサブウーファー経路が有効か(有効にしてあり、サブが1台以上ある)。
+func subsActive(p project.Project) bool {
+	return p.Sub.Enabled == "on" && len(p.Venue.Subs) > 0
+}
+
+// radiatedMono は、スピーカーから放射された音のモノラル表現(会場の残響を励起する音)を返す。
+// サブが無効なら バスの左右平均。有効なら メインの高域(クロスオーバーより上)の左右平均 +
+// サブの低域(左右の合計のクロスオーバーより下に、サブのレベルを掛けたものの半分)。
+// 半分にするのは、サブ経路のモノ合計(左右の和)をメイン2本が出す低域(左右平均)の大きさにそろえるため:
+// サブ 0 dB で、分けない場合(左右平均)と同じ大きさになり、サブのレベルを上げると残響の低域もその分増える。
+// 実際の会場では、サブが強く鳴るほど部屋の低域の残響も増える。
+func radiatedMono(bus [][]float32, active bool, sub project.Sub) []float32 {
+	n := len(bus[0])
+	mono := make([]float32, n)
+	if !active {
+		for i := range mono {
+			mono[i] = (bus[0][i] + bus[1][i]) / 2
+		}
+		return mono
+	}
+	fs := float64(sampleRate)
+	tmp := make([]float32, n)
+	for c := 0; c < 2; c++ {
+		copy(tmp, bus[c])
+		dsp.LR4HighPass(tmp, fs, sub.CrossoverHz)
+		for i, v := range tmp {
+			mono[i] += v / 2
+		}
+	}
+	for i := range tmp {
+		tmp[i] = bus[0][i] + bus[1][i]
+	}
+	dsp.LR4LowPass(tmp, fs, sub.CrossoverHz)
+	g := float32(dsp.DbToLin(sub.LevelDb) / 2)
+	for i, v := range tmp {
+		mono[i] += v * g
+	}
+	return mono
+}
+
 func speakerFeed(bus [][]float32, i, count int) []float32 {
 	if count == 1 {
 		m := make([]float32, len(bus[0]))
@@ -462,19 +510,22 @@ func speakerFeed(bus [][]float32, i, count int) []float32 {
 	return bus[i%2]
 }
 
-// reverbStage はPA出力のモノラル和を会場IR(左右)で畳み込む。
+// reverbStage はスピーカーから放射された音(radiatedMono)を会場IR(左右)で畳み込む。
 // 残響は距離減衰を掛ける前の信号で駆動する(拡散音場のレベルは距離に依らないため)。
-// 読むもの: 会場、reverb.preDelayMs / decayScale / highDampHz / low*(低域の残響)、PAの出力、長さ。(reverb.mix はミックス段)
+// 読むもの: 会場、reverb.preDelayMs / decayScale / highDampHz / low*(低域の残響)、
+// sub.*(サブが有効か・レベル・クロスオーバー。サブの低域も会場を励起するので残響に入る)、PAの出力、長さ。
+// (reverb.mix はミックス段)
 func (e *Engine) reverbStage(ctx context.Context, pp *prepared, bus *lazyBus, ir [][]float32, paKey string, total int) ([][]float32, error) {
 	r := pp.p.Reverb
+	sub := pp.p.Sub
+	active := subsActive(pp.p)
+	if !active {
+		sub = project.Sub{} // サブが無効なら、サブの設定は残響に影響しない(キーにも入れない)
+	}
 	key := hashKey(paKey, total, pp.p.Venue.Preset, r.PreDelayMs, r.DecayScale, r.HighDampHz,
-		r.LowCoherence, r.LowDecayScale, r.LowLevelDb, r.LowCrossoverHz)
+		r.LowCoherence, r.LowDecayScale, r.LowLevelDb, r.LowCrossoverHz, active, sub)
 	return memo(e.cache, "reverb", key, func() ([][]float32, error) {
-		in := bus.get()
-		mono := make([]float32, len(in[0]))
-		for i := range mono {
-			mono[i] = (in[0][i] + in[1][i]) / 2
-		}
+		mono := radiatedMono(bus.get(), active, sub)
 		out := [][]float32{make([]float32, total), make([]float32, total)}
 		errs := make([]error, 2)
 		var wg sync.WaitGroup
