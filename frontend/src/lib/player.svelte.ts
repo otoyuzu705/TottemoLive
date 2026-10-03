@@ -1,8 +1,23 @@
 // プレビュー再生。<audio> に加工後・原音(曲全体)の2本を切り替えて流す。
 // 新しいプレビューが届いたら、再生位置を保ったまま音源を差し替える。
+// 曲全体の処理が終わる前は、シーク位置の周辺だけを先に処理した「先行プレビュー」(曲の途中から始まる短い音)を
+// 再生できる。位置(position・シーク)は、音源によらず常に曲頭からの秒で扱い、音源の先頭の位置(offset)で換算する。
 import { bandLevels, seriesAt, type BandSeries } from './spectrum'
 
 export type Mode = 'processed' | 'original'
+
+/** 音源の読み込み時の付加情報。先行プレビューは、曲の途中(offset 秒)から始まる短い音。 */
+export interface LoadOptions {
+  /** 音源の先頭が曲頭から何秒の位置か(既定 0 = 曲全体) */
+  offset?: number
+  /** 先行プレビューか(曲全体の処理がまだ終わっていない) */
+  windowed?: boolean
+  /** 曲全体の長さ(秒)。先行プレビューでは音源の長さと違うので、別に受け取る */
+  total?: number
+}
+
+/** 先行プレビューの窓の端から、この秒数以内への移動は「窓の外」として扱う(新しい窓を要求する) */
+const WINDOW_EDGE_SEC = 0.5
 
 /** 再生音量(dB)の範囲。0 dB を超えると出力が0 dBFSを超えて歪むことがある。 */
 export const VOLUME_MIN_DB = -30
@@ -35,9 +50,21 @@ class Player {
   muted = $state(false)
   /** 加工後のプレビューに対応する、PA出力の帯域レベル(スペクトラム表示で重ねる)。無ければ null */
   pa = $state.raw<BandSeries | null>(null)
+  /** いま加工後として持っている音が先行プレビュー(曲の一部だけ)か。曲全体が届くと false になる */
+  windowed = $state(false)
+  /** 先行プレビューの窓の外へシークされた(曲頭からの秒)。曲全体の処理がまだ終わっていないときに呼ばれる */
+  onWindowMiss: ((sec: number) => void) | null = null
 
   private audio = new Audio()
   private blobs: Partial<Record<Mode, string>> = {}
+  /** 音源ごとの、先頭の位置(曲頭からの秒) */
+  private offsets: Record<Mode, number> = { processed: 0, original: 0 }
+  /** いま <audio> に入っている音源の先頭の位置(曲頭からの秒) */
+  private srcOffset = 0
+  /** 窓の外へシークして、新しい窓を待っている間の、続きの位置(曲頭からの秒)。無ければ null */
+  private target: number | null = null
+  /** 先行プレビューの終わりまで再生して止まった、または窓の外へのシークで止めた(次の音源が届いたら続きを再生する) */
+  private stalled = false
   private raf = 0
   private ctx?: AudioContext
   private gain?: GainNode
@@ -53,10 +80,13 @@ class Player {
       this.playing = false
       cancelAnimationFrame(this.raf)
     })
+    this.audio.addEventListener('ended', () => {
+      if (this.windowed && this.mode === 'processed') this.stalled = true
+    })
   }
 
   private tick = () => {
-    this.position = this.audio.currentTime
+    this.position = this.audio.currentTime + this.srcOffset
     if (this.playing) this.raf = requestAnimationFrame(this.tick)
   }
 
@@ -130,22 +160,30 @@ class Player {
   }
 
   /** 新しい音源を読み込む。keepPosition なら今の再生位置から続ける。 */
-  async load(kind: Mode, url: string, keepPosition: boolean) {
+  async load(kind: Mode, url: string, keepPosition: boolean, opts: LoadOptions = {}) {
     // <audio> に URL を直接渡さず、一度blobにする(WebViewのRange対応に依存せずシークできる)
     const res = await fetch(url)
     if (!res.ok) throw new Error(`プレビューを取得できません (${res.status})`)
     const blob = URL.createObjectURL(await res.blob())
     const old = this.blobs[kind]
     this.blobs[kind] = blob
+    this.offsets[kind] = opts.offset ?? 0
+    if (kind === 'processed') this.windowed = opts.windowed ?? false
     this.loaded[kind] = true
     if (this.mode === kind) await this.swap(blob, keepPosition)
+    if (opts.total && this.mode === kind) this.duration = opts.total
     if (old) setTimeout(() => URL.revokeObjectURL(old), 5000)
   }
 
   private async swap(src: string, keepPosition: boolean) {
-    const t = keepPosition ? this.audio.currentTime : 0
-    const wasPlaying = !this.audio.paused
+    const off = this.offsets[this.mode]
+    // 続きの位置(曲頭からの秒)。窓の外へのシークを待っていたときはその位置、そうでなければ今の位置
+    const t = !keepPosition ? 0 : (this.target ?? this.audio.currentTime + this.srcOffset)
+    this.target = null
+    const wasPlaying = !this.audio.paused || this.stalled
+    this.stalled = false
     this.audio.src = src
+    this.srcOffset = off
     // 読み込み完了を待つ。バックグラウンドのタブなどで読み込みが進まなくても、処理を止めないよう上限を付ける
     await new Promise<void>((resolve) => {
       const done = () => {
@@ -155,9 +193,23 @@ class Player {
       const timer = setTimeout(done, 3000)
       this.audio.addEventListener('loadedmetadata', done, { once: true })
     })
-    if (Number.isFinite(this.audio.duration)) this.duration = this.audio.duration
-    if (t > 0 && t < this.audio.duration) this.audio.currentTime = t
-    this.position = this.audio.currentTime
+    const len = this.audio.duration
+    if (Number.isFinite(len)) this.duration = len + off
+    // 窓(先行プレビュー)に収まらない位置なら、窓の端に寄せて止め、新しい窓を要求する
+    const rel = t - off
+    const outside =
+      this.windowed && this.mode === 'processed' && Number.isFinite(len) && (rel < -WINDOW_EDGE_SEC || rel > len - WINDOW_EDGE_SEC)
+    const at = Number.isFinite(len) ? Math.min(Math.max(rel, 0), Math.max(len - 0.1, 0)) : Math.max(rel, 0)
+    if (at > 0) this.audio.currentTime = at
+    this.position = this.audio.currentTime + off
+    if (outside) {
+      this.target = t
+      this.stalled = wasPlaying
+      this.audio.pause()
+      this.position = t
+      this.onWindowMiss?.(t)
+      return
+    }
     if (wasPlaying) await this.audio.play().catch(() => {})
   }
 
@@ -180,7 +232,23 @@ class Player {
   }
 
   seek(sec: number) {
-    if (this.audio.src) this.audio.currentTime = sec
+    if (!this.audio.src) {
+      this.position = sec
+      return
+    }
+    const rel = sec - this.srcOffset
+    const len = this.audio.duration
+    if (this.windowed && this.mode === 'processed' && Number.isFinite(len) && (rel < 0 || rel > len - WINDOW_EDGE_SEC)) {
+      // 先行プレビューの窓の外: 今の音は止めて、その位置の周辺を先に処理してもらう(届いたら続きを再生する)
+      this.stalled = this.stalled || !this.audio.paused
+      this.audio.pause()
+      this.target = sec
+      this.position = sec
+      this.onWindowMiss?.(sec)
+      return
+    }
+    this.target = null
+    this.audio.currentTime = Math.max(rel, 0)
     this.position = sec
   }
 }
