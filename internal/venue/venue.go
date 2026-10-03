@@ -25,39 +25,49 @@ type Preset struct {
 	Subs     []project.Speaker `json:"subs"`
 	Reverb   project.Reverb    `json:"reverb"`  // 残響パラメーターの既定値
 	RT60Sec  float64           `json:"rt60Sec"` // 会場IRの残響時間(decayScale=1)
+	// VolumeM3 は会場の容積(m³)、Q はPAの指向係数(無指向で1。ホーンやラインアレイで約10)。
+	// 臨界距離(直接音と残響が同じ大きさになる距離)を決める。
+	VolumeM3 float64 `json:"volumeM3"`
+	Q        float64 `json:"q"`
 }
 
 var presets = []Preset{
 	{ID: "club", Name: "クラブ", WidthM: 8, DepthM: 10,
 		Speakers: speakers(2, 2),
 		Subs:     subs(1.2),
-		Reverb:   reverb(0.2, 5, 9000, 1.2, 3),
-		RT60Sec:  0.35},
+		Reverb:   reverb(5, 9000, 1.2, 3),
+		RT60Sec:  0.35,
+		VolumeM3: 280, Q: 10},
 	{ID: "livehouse", Name: "ライブハウス", WidthM: 12, DepthM: 14,
 		Speakers: speakers(3, 2.5),
 		Subs:     subs(2),
-		Reverb:   reverb(0.25, 8, 7000, 1.3, 3),
-		RT60Sec:  0.5},
+		Reverb:   reverb(8, 7000, 1.3, 3),
+		RT60Sec:  0.5,
+		VolumeM3: 840, Q: 10},
 	{ID: "hall", Name: "ホール", WidthM: 30, DepthM: 40,
 		Speakers: speakers(7, 6),
 		Subs:     subs(4),
-		Reverb:   reverb(0.35, 25, 6500, 1.3, 3),
-		RT60Sec:  1.8},
+		Reverb:   reverb(25, 6500, 1.3, 3),
+		RT60Sec:  1.8,
+		VolumeM3: 14400, Q: 10},
 	{ID: "arena", Name: "アリーナ", WidthM: 80, DepthM: 70,
 		Speakers: speakers(12, 8),
 		Subs:     subs(7),
-		Reverb:   reverb(0.35, 40, 8000, 1.3, 3),
-		RT60Sec:  2.8},
+		Reverb:   reverb(40, 8000, 1.3, 3),
+		RT60Sec:  2.8,
+		VolumeM3: 140000, Q: 10},
 	{ID: "outdoor", Name: "野外フェス", WidthM: 100, DepthM: 120,
 		Speakers: speakers(10, 6),
 		Subs:     subs(6),
-		Reverb:   reverb(0.12, 90, 7000, 1.0, 0),
-		RT60Sec:  0.7},
+		Reverb:   reverb(90, 7000, 1.0, 0),
+		RT60Sec:  0.7,
+		VolumeM3: 1000000, Q: 10},
 	{ID: "dome", Name: "ドーム", WidthM: 120, DepthM: 100,
 		Speakers: speakers(18, 14),
 		Subs:     subs(10),
-		Reverb:   reverb(0.4, 70, 5500, 1.4, 3),
-		RT60Sec:  3.8},
+		Reverb:   reverb(70, 5500, 1.4, 3),
+		RT60Sec:  3.8,
+		VolumeM3: 600000, Q: 10},
 }
 
 // subs はステージ前の床の左右(中心から ±x m)に置く2発のサブウーファー。
@@ -65,12 +75,24 @@ func subs(x float64) []project.Speaker {
 	return []project.Speaker{{ID: "SubL", X: -x, Y: 1, Z: 0.3}, {ID: "SubR", X: x, Y: 1, Z: 0.3}}
 }
 
+// NominalMix は reverb.mix の基準値。この値のとき、残響のレベルは会場の物理的な値(臨界距離で直接音と同じ大きさ)になる。
+// 会場ごとの残響の多さの違いは、容積・残響時間・指向係数から決まる臨界距離で表すので、
+// 会場プリセットの既定値はすべてこの値にする。reverb.mix は、その上の補正(0で無し、1で約+9 dB)になる。
+const NominalMix = 0.35
+
+// CriticalDistanceM は臨界距離(m): 直接音と残響の大きさが等しくなる、スピーカーからの距離。
+// 0.057·√(Q·V / RT60)(Sabineの式から。V は容積、RT60 は残響時間、Q は指向係数)。
+// decayScale で残響を長くすると臨界距離は短くなる(残響が相対的に増える)。
+func CriticalDistanceM(pr Preset, decayScale float64) float64 {
+	return 0.057 * math.Sqrt(pr.Q*pr.VolumeM3/(pr.RT60Sec*math.Max(decayScale, 0.05)))
+}
+
 // reverb は会場プリセットの残響の既定値。低域の残響は、左右の相関を1(自然な拡散音場)、
 // 境界周波数を250 Hzにして、低域の長さの倍率とレベルだけを会場ごとに決める
 // (開けた野外は低域がこもらないので 1.0 倍・0 dB)。
-func reverb(mix, preDelayMs, highDampHz, lowDecayScale, lowLevelDb float64) project.Reverb {
+func reverb(preDelayMs, highDampHz, lowDecayScale, lowLevelDb float64) project.Reverb {
 	return project.Reverb{
-		Mix: mix, PreDelayMs: preDelayMs, DecayScale: 1, HighDampHz: highDampHz,
+		Mix: NominalMix, PreDelayMs: preDelayMs, DecayScale: 1, HighDampHz: highDampHz,
 		LowCoherence: 1, LowDecayScale: lowDecayScale, LowLevelDb: lowLevelDb, LowCrossoverHz: 250,
 	}
 }

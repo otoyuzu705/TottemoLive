@@ -173,7 +173,7 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 		return nil, err
 	}
 
-	out := mix(p, crop(direct, outLen), crop(reverb, outLen-revDelay), crop(crowdSig, outLen), revDelay)
+	out := mix(mixGainsFor(p, pp.pr), crop(direct, outLen), crop(reverb, outLen-revDelay), crop(crowdSig, outLen), revDelay)
 	master(out, sampleRate, p.Output)
 	steps.done()
 	res := &Result{Audio: out, SampleRate: sampleRate, LUFS: dsp.IntegratedLUFS(out, sampleRate)}
@@ -560,22 +560,40 @@ func (e *Engine) crowdStage(ctx context.Context, pp *prepared, total int) ([][]f
 	})
 }
 
-// mix は直接音・残響・客席をそれぞれのレベルで足す。
-// 直接音は (1-reverb.mix)、残響は reverb.mix で配分する。
-func mix(p project.Project, direct, reverb, crowdSig [][]float32, reverbDelay int) [][]float32 {
-	dg := float32(dsp.DbToLin(p.Spatial.DirectLevelDb) * (1 - p.Reverb.Mix))
-	rg := float32(p.Reverb.Mix)
-	cg := float32(dsp.DbToLin(p.Crowd.LevelDb))
+// mixGains は、ミックスの3本のゲイン(線形)。
+type mixGains struct{ direct, reverb, crowd float32 }
+
+// mixGainsFor は、直接音・残響・客席のゲインを決める。
+//
+// 直接音: spatial.directLevelDb だけ(距離による大きさは、スピーカーごとの距離減衰で既に掛かっている)。
+// 残響: 会場の物理的な値を基準にする。残響(拡散音場)の大きさは、リスナーの位置に依らず一定で、直接音は
+// 距離に応じて変わる。両者が等しくなる距離が臨界距離で、会場の容積・残響時間・PAの指向係数から決まる
+// (venue.CriticalDistanceM)。そこで、残響のゲインを「臨界距離にいるときの、メイン全部の直接音のゲインの和」にする。
+// すると、臨界距離より近い席では直接音が主役、遠い席では残響が主役になり、会場による違いも出る。
+// reverb.mix は、その上の補正で、基準値(venue.NominalMix)のときに物理的な値、0 で残響なし、1 で約 +9 dB。
+// (直接音を (1 - mix) で薄める従来のクロスフェードはやめた。全体の音量はラウドネス調整で決まる)
+func mixGainsFor(p project.Project, pr venue.Preset) mixGains {
+	dc := venue.CriticalDistanceM(pr, p.Reverb.DecayScale)
+	reverb := float64(len(p.Venue.Speakers)) * spatial.Gain(dc, p.Spatial.DistanceRolloff) * p.Reverb.Mix / venue.NominalMix
+	return mixGains{
+		direct: float32(dsp.DbToLin(p.Spatial.DirectLevelDb)),
+		reverb: float32(reverb),
+		crowd:  float32(dsp.DbToLin(p.Crowd.LevelDb)),
+	}
+}
+
+// mix は直接音・残響・客席を、それぞれのゲインで足す。
+func mix(g mixGains, direct, reverb, crowdSig [][]float32, reverbDelay int) [][]float32 {
 	out := make([][]float32, 2)
 	for c := range out {
 		out[c] = make([]float32, len(direct[c]))
 		for i := range out[c] {
-			out[c][i] = direct[c][i]*dg + crowdSig[c][i]*cg
+			out[c][i] = direct[c][i]*g.direct + crowdSig[c][i]*g.crowd
 		}
 		// 残響は、リスナーに最初の音が届く時刻(reverbDelay)から始まる
 		for i, v := range reverb[c] {
 			if j := i + reverbDelay; j < len(out[c]) {
-				out[c][j] += v * rg
+				out[c][j] += v * g.reverb
 			}
 		}
 	}

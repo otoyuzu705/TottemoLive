@@ -80,11 +80,15 @@ func TestSyntheticHRIRLateralization(t *testing.T) {
 }
 
 func TestDistanceModel(t *testing.T) {
-	if Gain(5, 1) != 1 || math.Abs(Gain(20, 1)-0.5) > 1e-12 || Gain(40, 0) != 1 {
-		t.Error("gain")
+	// 基準距離(10 m)でゲイン1、近いと大きく(逆距離則)、遠いと小さく、上限は +12 dB(MaxGain)
+	if Gain(10, 1) != 1 || math.Abs(Gain(5, 1)-2) > 1e-12 || math.Abs(Gain(20, 1)-0.5) > 1e-12 || Gain(40, 0) != 1 {
+		t.Errorf("gain: %v %v %v %v", Gain(10, 1), Gain(5, 1), Gain(20, 1), Gain(40, 0))
 	}
-	if Gain(0.1, 1) > MaxGain {
-		t.Error("gain not capped")
+	if math.Abs(Gain(3, 1)-10.0/3) > 1e-12 || Gain(2.5, 1) != MaxGain || Gain(0.1, 1) != MaxGain || Gain(0, 1) != MaxGain {
+		t.Errorf("gain should rise as 1/d and be capped at MaxGain: %v %v %v", Gain(3, 1), Gain(2.5, 1), Gain(0.1, 1))
+	}
+	if math.Abs(20*math.Log10(MaxGain)-12.04) > 0.01 {
+		t.Errorf("MaxGain is %.2f dB, want +12 dB", 20*math.Log10(MaxGain))
 	}
 	if AirCutoffHz(50, 0) != 0 || AirCutoffHz(100, 1) >= AirCutoffHz(10, 1) || AirCutoffHz(1e6, 2) != AirMinHz {
 		t.Error("air cutoff")
@@ -136,8 +140,8 @@ func TestSub(t *testing.T) {
 	if first(out) != DelaySamples(40, 48000) {
 		t.Errorf("far sub: index %d", first(out))
 	}
-	// 基準距離より近いと減衰しない
-	if v := Sub(in, 48000, 5, 5, 1); v[first(v)] != 1 {
-		t.Errorf("close sub gain %v", v[first(v)])
+	// 基準距離より近いと大きくなる(逆距離則)
+	if v := Sub(in, 48000, 5, 5, 1); math.Abs(float64(v[first(v)])-2) > 1e-6 {
+		t.Errorf("close sub gain %v, want 2", v[first(v)])
 	}
 }

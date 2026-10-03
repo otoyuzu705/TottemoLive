@@ -1,10 +1,12 @@
 package render
 
 import (
+	"math"
 	"testing"
 
 	"tottemolive/internal/project"
 	"tottemolive/internal/spatial"
+	"tottemolive/internal/venue"
 )
 
 // 残響は、最初に届く音(いちばん近いメインスピーカーの直接音)から始まる。
@@ -29,10 +31,7 @@ func TestFirstArrival(t *testing.T) {
 
 // mix は残響を reverbDelay だけ遅らせて足し、直接音・客席はそのまま足す。
 func TestMixDelaysReverb(t *testing.T) {
-	p := project.New()
-	p.Reverb.Mix = 0.5
-	p.Spatial.DirectLevelDb = 0
-	p.Crowd.LevelDb = 0
+	g := mixGains{direct: 1, reverb: 0.5, crowd: 1}
 	n := 400
 	zero := func() [][]float32 { return [][]float32{make([]float32, n), make([]float32, n)} }
 	direct, reverb, crowd := zero(), zero(), zero()
@@ -40,11 +39,11 @@ func TestMixDelaysReverb(t *testing.T) {
 	reverb[0][0], reverb[1][5] = 1, 1
 	crowd[1][20] = 1
 	const delay = 100
-	out := mix(p, direct, reverb, crowd, delay)
+	out := mix(g, direct, reverb, crowd, delay)
 	if len(out[0]) != n {
 		t.Fatalf("length %d", len(out[0]))
 	}
-	if out[0][10] != 0.5 { // 直接音 × (1 - mix)
+	if out[0][10] != 1 { // 直接音
 		t.Errorf("direct %v", out[0][10])
 	}
 	if out[0][delay] != 0.5 || out[0][0] != 0 { // 残響は delay から始まる(× mix)
@@ -58,5 +57,50 @@ func TestMixDelaysReverb(t *testing.T) {
 	}
 	// 出力の終わりを越える残響は切り捨てる(範囲外に書かない)
 	reverb[0][n-1] = 1
-	mix(p, direct, reverb, crowd, delay)
+	mix(g, direct, reverb, crowd, delay)
+}
+
+// 残響のゲインは会場の物理的な値: 臨界距離にいるとき、メイン全部の直接音と同じ大きさ(D/R = 0 dB)。
+// 残響はリスナーの位置に依らず、直接音は距離で変わる。reverb.mix は基準値のとき物理値、0で無し、1で約+9 dB。
+func TestMixGainsPhysicalReverb(t *testing.T) {
+	arena, _ := venue.Get("arena")
+	p := project.New() // アリーナ、メイン2本、mix は基準値
+	g := mixGainsFor(p, arena)
+	dc := venue.CriticalDistanceM(arena, p.Reverb.DecayScale)
+	directAtDc := float64(len(p.Venue.Speakers)) * spatial.Gain(dc, p.Spatial.DistanceRolloff)
+	if math.Abs(float64(g.reverb)-directAtDc) > 1e-6 {
+		t.Errorf("reverb gain %.4f, want the direct gain at the critical distance %.4f", g.reverb, directAtDc)
+	}
+	// D/R は距離で変わる: 臨界距離の半分の席では直接音が +6 dB、倍の席では -6 dB
+	dr := func(d float64) float64 {
+		return 20 * math.Log10(float64(len(p.Venue.Speakers))*spatial.Gain(d, 1)/float64(g.reverb))
+	}
+	if math.Abs(dr(dc)) > 1e-6 || math.Abs(dr(dc/2)-6.02) > 0.05 || math.Abs(dr(dc*2)+6.02) > 0.05 {
+		t.Errorf("D/R at dc/2, dc, 2dc: %.2f %.2f %.2f dB", dr(dc/2), dr(dc), dr(dc*2))
+	}
+	// reverb.mix: 0 で無し、基準値の倍で +6 dB
+	p.Reverb.Mix = 0
+	if mixGainsFor(p, arena).reverb != 0 {
+		t.Error("mix 0 should silence the reverb")
+	}
+	p.Reverb.Mix = venue.NominalMix * 2
+	if d := 20 * math.Log10(float64(mixGainsFor(p, arena).reverb)/float64(g.reverb)); math.Abs(d-6.02) > 0.01 {
+		t.Errorf("double mix: %.2f dB", d)
+	}
+	// 残響を長くすると臨界距離が縮み、残響が大きくなる。直接音のゲインは directLevelDb だけで決まる
+	p.Reverb.Mix = venue.NominalMix
+	p.Reverb.DecayScale = 1.2
+	if mixGainsFor(p, arena).reverb <= g.reverb {
+		t.Error("longer decay should raise the physical reverb level")
+	}
+	p.Spatial.DirectLevelDb = -6
+	if d := 20 * math.Log10(float64(mixGainsFor(p, arena).direct)); math.Abs(d+6) > 1e-6 {
+		t.Errorf("direct gain %.2f dB, want -6", d)
+	}
+	// 会場が大きい(臨界距離が遠い)ほど、残響は直接音に対して小さい: 野外のほうがアリーナより小さい
+	out, _ := venue.Get("outdoor")
+	p = project.New()
+	if mixGainsFor(p, out).reverb >= mixGainsFor(p, arena).reverb {
+		t.Error("an open-air venue should have a quieter reverb than an arena")
+	}
 }

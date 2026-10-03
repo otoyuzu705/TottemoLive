@@ -249,3 +249,36 @@ func TestBuildIRNormalizesMidBand(t *testing.T) {
 		t.Errorf("8 kHz band should drop with a strong damp, moved %.1f dB", d)
 	}
 }
+
+// 臨界距離: 大きく残響の長い会場ほど遠く、残響を長くすると短くなる。典型的な値の範囲に収まる。
+func TestCriticalDistance(t *testing.T) {
+	want := map[string][2]float64{ // 会場: 臨界距離の妥当な範囲(m)
+		"club": {3, 8}, "livehouse": {5, 11}, "hall": {10, 25}, "arena": {30, 55}, "dome": {55, 100}, "outdoor": {100, 300},
+	}
+	var last float64
+	for _, id := range []string{"club", "livehouse", "hall", "arena", "dome"} {
+		pr, _ := Get(id)
+		dc := CriticalDistanceM(pr, 1)
+		if r := want[id]; dc < r[0] || dc > r[1] {
+			t.Errorf("%s: critical distance %.1f m, expected within %v", id, dc, r)
+		}
+		if dc <= last {
+			t.Errorf("%s: critical distance %.1f m should grow with the venue size", id, dc)
+		}
+		last = dc
+		if CriticalDistanceM(pr, 1.2) >= dc || CriticalDistanceM(pr, 0.5) <= dc {
+			t.Errorf("%s: longer decay must shorten the critical distance", id)
+		}
+	}
+	out, _ := Get("outdoor")
+	arena, _ := Get("arena")
+	if CriticalDistanceM(out, 1) <= CriticalDistanceM(arena, 1)*2 {
+		t.Error("an open-air venue should have a much larger critical distance")
+	}
+	// 会場プリセットの残響量の既定値はすべて基準値(会場の違いは臨界距離で表す)
+	for _, pr := range List() {
+		if pr.Reverb.Mix != NominalMix {
+			t.Errorf("%s: mix %v, want the nominal %v", pr.ID, pr.Reverb.Mix, NominalMix)
+		}
+	}
+}

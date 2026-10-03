@@ -13,7 +13,7 @@ import (
 // 距離モデルの形を決める定数。強さそのものは Project の spatial.* で調整する。
 const (
 	SpeedOfSound = 343.0 // m/s
-	// RefDistanceM は距離減衰の基準距離。これより近い音は減衰せず、最大 MaxGain まで持ち上げる。
+	// RefDistanceM は距離減衰の基準距離(ゲイン1)。これより近い音は大きくなり、最大 MaxGain まで持ち上げる。
 	RefDistanceM = 10.0
 	MaxGain      = 4.0
 	// 空気吸収: カットオフ = AirBaseHz / (1 + absorption * d / AirScaleM)、AirMinHz を下限にする。
@@ -45,12 +45,10 @@ func LoadSet(name string, sr int) (Set, error) {
 	return nil, fmt.Errorf("spatial: unknown HRIR set %q", name)
 }
 
-// Gain は距離 d(m) での減衰ゲイン。rolloff=1 で逆距離則。
+// Gain は距離 d(m) での減衰ゲイン。rolloff=1 で逆距離則。基準距離 RefDistanceM でゲイン1で、
+// それより近いと大きくなり(最大 MaxGain = +12 dB)、遠いと小さくなる。
 func Gain(d, rolloff float64) float64 {
-	if d <= RefDistanceM {
-		return 1
-	}
-	return math.Min(math.Pow(RefDistanceM/d, rolloff), MaxGain)
+	return math.Min(math.Pow(RefDistanceM/math.Max(d, 1e-3), rolloff), MaxGain)
 }
 
 // AirCutoffHz は空気吸収を模す低域通過のカットオフ。absorption=0 のときは 0(フィルタなし)。
