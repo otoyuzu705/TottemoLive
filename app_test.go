@@ -99,42 +99,58 @@ func TestAddAudioFilesAndPeaks(t *testing.T) {
 
 func TestRenderPreviewServesWav(t *testing.T) {
 	a, _, p := newTestApp(t)
-	url, err := a.RenderPreview(p)
-	if err != nil || url == "" {
-		t.Fatalf("preview: %q %v", url, err)
+	r, err := a.RenderPreview(p)
+	if err != nil || r.URL == "" {
+		t.Fatalf("preview: %+v %v", r, err)
 	}
 	srv := httptest.NewServer(a.store)
 	defer srv.Close()
-	res, err := http.Get(srv.URL + url)
-	if err != nil {
-		t.Fatal(err)
+	get := func(path string) (int, []byte) {
+		res, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		body, _ := io.ReadAll(res.Body)
+		return res.StatusCode, body
 	}
-	defer res.Body.Close()
-	body, _ := io.ReadAll(res.Body)
-	if res.StatusCode != 200 || len(body) < 44+2*2*48000*3 || string(body[:4]) != "RIFF" {
-		t.Errorf("wav: status=%d len=%d", res.StatusCode, len(body))
+	if code, body := get(r.URL); code != 200 || len(body) < 44+2*2*48000*3 || string(body[:4]) != "RIFF" {
+		t.Errorf("wav: status=%d len=%d", code, len(body))
 	}
+
+	// PA出力の帯域レベル: 件数・フレーム数・バイト数が結果の項目と一致する
+	if r.BandsURL == "" || r.Bands != 31 || r.HopSec != 0.05 || r.Frames < 55 {
+		t.Fatalf("bands info: %+v", r)
+	}
+	code, body := get(r.BandsURL)
+	if code != 200 || len(body) != r.Frames*r.Bands*4 {
+		t.Errorf("bands: status=%d len=%d, want %d", code, len(body), r.Frames*r.Bands*4)
+	}
+	if r.OffsetDb != r.OffsetDb { // NaN
+		t.Error("offset is NaN")
+	}
+
 	orig, err := a.RenderOriginal(p)
-	if err != nil || orig == "" || orig == url {
+	if err != nil || orig == "" || orig == r.URL {
 		t.Errorf("original: %q %v", orig, err)
 	}
 }
 
-// 新しいプレビュー要求は古い要求を中断し、中断された側は空文字を返す。
+// 新しいプレビュー要求は古い要求を中断し、中断された側は URL が空の結果を返す。
 func TestRenderPreviewSupersedes(t *testing.T) {
 	a, _, p := newTestApp(t)
 	p.Venue.Preset = "dome" // 重めにして、古い要求がまだ動いているうちに次を投げる
 	p, _ = a.ApplyVenue(p, "dome")
 	first := make(chan string, 1)
 	go func() {
-		u, _ := a.RenderPreview(p)
-		first <- u
+		r, _ := a.RenderPreview(p)
+		first <- r.URL
 	}()
 	time.Sleep(150 * time.Millisecond)
 	q := p.Clone()
 	q.PA.LowCutHz = 150
-	if u, err := a.RenderPreview(q); err != nil || u == "" {
-		t.Fatalf("second: %q %v", u, err)
+	if r, err := a.RenderPreview(q); err != nil || r.URL == "" {
+		t.Fatalf("second: %+v %v", r, err)
 	}
 	if u := <-first; u != "" {
 		t.Logf("first finished before cancel took effect (%q) — acceptable on a fast machine", u)

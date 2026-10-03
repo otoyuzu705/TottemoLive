@@ -5,9 +5,7 @@ package project
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
-	"sort"
 
 	"tottemolive/internal/params"
 )
@@ -54,7 +52,12 @@ type Listener struct {
 }
 
 type PA struct {
+	// AutoLevel("off" / "on")が on のとき、音源ゲイン後の合計の統合ラウドネスを InputLufs にそろえてからPAを通す。
+	AutoLevel       string  `json:"autoLevel"`
+	InputLufs       float64 `json:"inputLufs"`
 	LowCutHz        float64 `json:"lowCutHz"`
+	LowShelfHz      float64 `json:"lowShelfHz"`
+	LowShelfDb      float64 `json:"lowShelfDb"`
 	HighShelfHz     float64 `json:"highShelfHz"`
 	HighShelfDb     float64 `json:"highShelfDb"`
 	CompThresholdDb float64 `json:"compThresholdDb"`
@@ -91,25 +94,10 @@ type Reverb struct {
 	LowDecayScale  float64 `json:"lowDecayScale"`
 	LowLevelDb     float64 `json:"lowLevelDb"`
 	LowCrossoverHz float64 `json:"lowCrossoverHz"`
-}
-
-type Keyframe struct {
-	T     float64 `json:"t"`
-	Cheer float64 `json:"cheer"`
-}
-
-type ClapRange struct {
-	Start float64 `json:"start"`
-	End   float64 `json:"end"`
-}
-
-type Crowd struct {
-	Density    float64     `json:"density"`
-	LevelDb    float64     `json:"levelDb"`
-	SpreadM    float64     `json:"spreadM"`
-	Seed       int         `json:"seed"`
-	Keyframes  []Keyframe  `json:"keyframes"`
-	ClapRanges []ClapRange `json:"clapRanges"`
+	// 高域の残響。HighDecayHz 以上の帯域は、残響の長さが HighDecayScale 倍(1以下)になる。
+	// 実際の会場は、空気や壁・客席の吸収で、高域ほど早く減衰する。
+	HighDecayScale float64 `json:"highDecayScale"`
+	HighDecayHz    float64 `json:"highDecayHz"`
 }
 
 type Output struct {
@@ -128,7 +116,6 @@ type Project struct {
 	Sub      Sub      `json:"sub"`
 	Spatial  Spatial  `json:"spatial"`
 	Reverb   Reverb   `json:"reverb"`
-	Crowd    Crowd    `json:"crowd"`
 	Output   Output   `json:"output"`
 }
 
@@ -155,7 +142,6 @@ func New() Project {
 		Sources:  []Source{},
 		Venue:    DefaultVenue(),
 		Listener: Listener{X: 0, Y: 25, Z: 1.2},
-		Crowd:    Crowd{Keyframes: []Keyframe{}, ClapRanges: []ClapRange{}},
 	}
 	if err := params.SetDefaults(&p); err != nil {
 		panic(err) // 表とProjectの不一致はテストで検出される
@@ -164,49 +150,11 @@ func New() Project {
 	return p
 }
 
-// Normalize は全パラメーターを範囲に丸め、出力形式を固定値にそろえ、
-// 客席タイムラインを整える(キーフレームは時刻順・強さ0〜1、手拍子区間は時刻順で重なりを結合)。
+// Normalize は全パラメーターを範囲に丸め、出力形式を固定値にそろえる。
 func (p *Project) Normalize() {
 	_ = params.Clamp(p)
 	p.Output.SampleRate = OutputSampleRate
 	p.Output.BitDepth = OutputBitDepth
-	p.Crowd.Keyframes = normalizeKeyframes(p.Crowd.Keyframes)
-	p.Crowd.ClapRanges = normalizeClapRanges(p.Crowd.ClapRanges)
-}
-
-func normalizeKeyframes(kf []Keyframe) []Keyframe {
-	out := make([]Keyframe, 0, len(kf))
-	for _, k := range kf {
-		if math.IsNaN(k.T) || math.IsNaN(k.Cheer) || math.IsInf(k.T, 0) {
-			continue
-		}
-		out = append(out, Keyframe{T: math.Max(k.T, 0), Cheer: math.Min(math.Max(k.Cheer, 0), 1)})
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].T < out[j].T })
-	return out
-}
-
-func normalizeClapRanges(rs []ClapRange) []ClapRange {
-	valid := make([]ClapRange, 0, len(rs))
-	for _, r := range rs {
-		if math.IsNaN(r.Start) || math.IsNaN(r.End) || math.IsInf(r.Start, 0) || math.IsInf(r.End, 0) {
-			continue
-		}
-		r.Start = math.Max(r.Start, 0)
-		if r.End > r.Start {
-			valid = append(valid, r)
-		}
-	}
-	sort.Slice(valid, func(i, j int) bool { return valid[i].Start < valid[j].Start })
-	out := make([]ClapRange, 0, len(valid))
-	for _, r := range valid {
-		if n := len(out); n > 0 && r.Start <= out[n-1].End {
-			out[n-1].End = math.Max(out[n-1].End, r.End)
-			continue
-		}
-		out = append(out, r)
-	}
-	return out
 }
 
 // Clone はスライスも含めて複製する。
@@ -214,8 +162,6 @@ func (p Project) Clone() Project {
 	p.Sources = append([]Source{}, p.Sources...)
 	p.Venue.Speakers = append([]Speaker{}, p.Venue.Speakers...)
 	p.Venue.Subs = append([]Speaker{}, p.Venue.Subs...)
-	p.Crowd.Keyframes = append([]Keyframe{}, p.Crowd.Keyframes...)
-	p.Crowd.ClapRanges = append([]ClapRange{}, p.Crowd.ClapRanges...)
 	return p
 }
 

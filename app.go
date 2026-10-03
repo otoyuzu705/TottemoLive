@@ -136,7 +136,7 @@ type SourceInfo struct {
 	Channels    int     `json:"channels"`
 }
 
-var audioFilter = runtime.FileFilter{DisplayName: "音声ファイル (*.wav, *.flac, *.mp3)", Pattern: "*.wav;*.flac;*.mp3"}
+var audioFilter = runtime.FileFilter{DisplayName: "音声ファイル (*.wav, *.flac, *.mp3, *.m4a)", Pattern: "*.wav;*.flac;*.mp3;*.m4a"}
 
 // OpenAudioFiles はネイティブのファイル選択を開き、選ばれた音源の長さ・サンプルレートを返す。
 func (a *App) OpenAudioFiles() ([]SourceInfo, error) {
@@ -304,14 +304,70 @@ func (a *App) DeleteSoundPreset(name string) error { return a.presets.Delete(nam
 
 // --- レンダリング ---
 
-// RenderPreview は曲全体を書き出しと同じ処理でレンダリングし、プレビューURL(/preview/{id}.wav)を返す。
-// 段ごとのキャッシュを使う。新しい要求が来ると進行中のプレビューは中断され、
-// 中断された呼び出しは空文字とnilを返す(フロントは無視する)。
-func (a *App) RenderPreview(p project.Project) (string, error) {
+// PreviewResult はプレビューのレンダリング結果。URL が空なら、新しい要求に追い越されて中断された
+// (フロントは無視する)。BandsURL はPA出力の帯域レベル(リトルエンディアンの float32、フレーム × Bands の行優先、
+// dB、0 dBFS の正弦波 = 0 dB)で、フレーム f の中心は f × HopSec 秒。OffsetDb は、PA出力の全体の大きさを
+// 耳に届く出力にそろえる値(dB)。スペクトラム表示で「PAから出た音」を重ねるために使う。
+type PreviewResult struct {
+	URL      string  `json:"url"`
+	BandsURL string  `json:"bandsUrl"`
+	Bands    int     `json:"bands"`
+	Frames   int     `json:"frames"`
+	HopSec   float64 `json:"hopSec"`
+	OffsetDb float64 `json:"offsetDb"`
+}
+
+// RenderPreview は曲全体を書き出しと同じ処理でレンダリングし、プレビューのURL(/preview/{id}.wav)と、
+// PA出力の帯域レベルのURL(/preview/{id}.bands)を返す。段ごとのキャッシュを使う。
+// 新しい要求が来ると進行中のプレビューは中断され、中断された呼び出しは URL が空の結果とnilを返す。
+func (a *App) RenderPreview(p project.Project) (PreviewResult, error) {
 	_, ctx, done := a.jobs.Begin(a.ctx, "preview")
 	defer done()
 	res, err := a.engine.Preview(ctx, p, nil)
-	return a.previewURL(ctx, res, err)
+	if err != nil {
+		if ctx.Err() != nil {
+			return PreviewResult{}, nil
+		}
+		return PreviewResult{}, err
+	}
+	wav := audio.WAV16(res.Audio, res.SampleRate)
+	if res.PA == nil {
+		return PreviewResult{URL: a.store.Put(wav)}, nil
+	}
+	url, bandsURL := a.store.PutWithBands(wav, res.PA.Series.Bytes())
+	return PreviewResult{
+		URL: url, BandsURL: bandsURL,
+		Bands: res.PA.Series.Bands, Frames: res.PA.Series.Frames, HopSec: res.PA.Series.HopSec, OffsetDb: res.PA.OffsetDb,
+	}, nil
+}
+
+// WindowResult は先行プレビュー(曲の一部だけを先に処理した結果)。URL が空なら、新しい要求に追い越されて中断された
+// (フロントは無視する)。StartSec は URL の音の先頭が曲頭から何秒の位置か、TotalSec は曲全体(残響の尾を含む)の長さ(秒)。
+type WindowResult struct {
+	URL      string  `json:"url"`
+	StartSec float64 `json:"startSec"`
+	TotalSec float64 `json:"totalSec"`
+}
+
+// RenderPreviewWindow は、startSec(曲頭からの秒)から約30秒ぶんだけを、曲全体と同じ処理で先にレンダリングする。
+// 曲全体の処理(RenderPreview)が終わるまでの間、シーク位置の周辺をすぐに聴けるようにするためのもの。
+// supersede が true なら、進行中の曲全体のプレビューを中断する(パラメーターが変わって、古い値の処理が不要になったとき)。
+// false なら、曲全体の処理はそのまま続ける(同じ値のまま、窓の外へシークしたとき)。
+// 新しい窓の要求が来ると、進行中の窓は中断され、中断された呼び出しは URL が空の結果とnilを返す。
+func (a *App) RenderPreviewWindow(p project.Project, startSec float64, supersede bool) (WindowResult, error) {
+	if supersede {
+		a.jobs.CancelKind("preview")
+	}
+	_, ctx, done := a.jobs.Begin(a.ctx, "previewWindow")
+	defer done()
+	w, err := a.engine.PreviewWindow(ctx, p, startSec)
+	if err != nil {
+		if ctx.Err() != nil {
+			return WindowResult{}, nil
+		}
+		return WindowResult{}, err
+	}
+	return WindowResult{URL: a.store.Put(audio.WAV16(w.Audio, w.SampleRate)), StartSec: w.StartSec, TotalSec: w.TotalSec}, nil
 }
 
 // RenderOriginal は曲全体の原音(A/B比較用)のURLを返す。ラウドネスはプレビューと同じ目標にそろえる。

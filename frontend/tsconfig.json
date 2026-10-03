@@ -14,7 +14,10 @@
      */
     "allowJs": true,
     "checkJs": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    // テスト(node:test)が .ts の拡張子つきでインポートするため。ビルドはViteが行うので出力はしない
+    "allowImportingTsExtensions": true,
+    "noEmit": true
   },
   "include": [
     "src/**/*.d.ts",

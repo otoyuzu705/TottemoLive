@@ -1,5 +1,27 @@
 export namespace main {
 	
+	export class PreviewResult {
+	    url: string;
+	    bandsUrl: string;
+	    bands: number;
+	    frames: number;
+	    hopSec: number;
+	    offsetDb: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PreviewResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.bandsUrl = source["bandsUrl"];
+	        this.bands = source["bands"];
+	        this.frames = source["frames"];
+	        this.hopSec = source["hopSec"];
+	        this.offsetDb = source["offsetDb"];
+	    }
+	}
 	export class SourceInfo {
 	    id: string;
 	    path: string;
@@ -20,6 +42,22 @@ export namespace main {
 	        this.durationSec = source["durationSec"];
 	        this.sampleRate = source["sampleRate"];
 	        this.channels = source["channels"];
+	    }
+	}
+	export class WindowResult {
+	    url: string;
+	    startSec: number;
+	    totalSec: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new WindowResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.startSec = source["startSec"];
+	        this.totalSec = source["totalSec"];
 	    }
 	}
 
@@ -66,75 +104,6 @@ export namespace params {
 
 export namespace project {
 	
-	export class ClapRange {
-	    start: number;
-	    end: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new ClapRange(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.start = source["start"];
-	        this.end = source["end"];
-	    }
-	}
-	export class Keyframe {
-	    t: number;
-	    cheer: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new Keyframe(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.t = source["t"];
-	        this.cheer = source["cheer"];
-	    }
-	}
-	export class Crowd {
-	    density: number;
-	    levelDb: number;
-	    spreadM: number;
-	    seed: number;
-	    keyframes: Keyframe[];
-	    clapRanges: ClapRange[];
-	
-	    static createFrom(source: any = {}) {
-	        return new Crowd(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.density = source["density"];
-	        this.levelDb = source["levelDb"];
-	        this.spreadM = source["spreadM"];
-	        this.seed = source["seed"];
-	        this.keyframes = this.convertValues(source["keyframes"], Keyframe);
-	        this.clapRanges = this.convertValues(source["clapRanges"], ClapRange);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	
 	export class Listener {
 	    x: number;
 	    y: number;
@@ -172,7 +141,11 @@ export namespace project {
 	    }
 	}
 	export class PA {
+	    autoLevel: string;
+	    inputLufs: number;
 	    lowCutHz: number;
+	    lowShelfHz: number;
+	    lowShelfDb: number;
 	    highShelfHz: number;
 	    highShelfDb: number;
 	    compThresholdDb: number;
@@ -187,7 +160,11 @@ export namespace project {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.autoLevel = source["autoLevel"];
+	        this.inputLufs = source["inputLufs"];
 	        this.lowCutHz = source["lowCutHz"];
+	        this.lowShelfHz = source["lowShelfHz"];
+	        this.lowShelfDb = source["lowShelfDb"];
 	        this.highShelfHz = source["highShelfHz"];
 	        this.highShelfDb = source["highShelfDb"];
 	        this.compThresholdDb = source["compThresholdDb"];
@@ -206,6 +183,8 @@ export namespace project {
 	    lowDecayScale: number;
 	    lowLevelDb: number;
 	    lowCrossoverHz: number;
+	    highDecayScale: number;
+	    highDecayHz: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Reverb(source);
@@ -221,6 +200,8 @@ export namespace project {
 	        this.lowDecayScale = source["lowDecayScale"];
 	        this.lowLevelDb = source["lowLevelDb"];
 	        this.lowCrossoverHz = source["lowCrossoverHz"];
+	        this.highDecayScale = source["highDecayScale"];
+	        this.highDecayHz = source["highDecayHz"];
 	    }
 	}
 	export class Spatial {
@@ -336,7 +317,6 @@ export namespace project {
 	    sub: Sub;
 	    spatial: Spatial;
 	    reverb: Reverb;
-	    crowd: Crowd;
 	    output: Output;
 	
 	    static createFrom(source: any = {}) {
@@ -353,7 +333,6 @@ export namespace project {
 	        this.sub = this.convertValues(source["sub"], Sub);
 	        this.spatial = this.convertValues(source["spatial"], Spatial);
 	        this.reverb = this.convertValues(source["reverb"], Reverb);
-	        this.crowd = this.convertValues(source["crowd"], Crowd);
 	        this.output = this.convertValues(source["output"], Output);
 	    }
 	
@@ -408,6 +387,8 @@ export namespace venue {
 	    subs: project.Speaker[];
 	    reverb: project.Reverb;
 	    rt60Sec: number;
+	    volumeM3: number;
+	    q: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Preset(source);
@@ -423,6 +404,8 @@ export namespace venue {
 	        this.subs = this.convertValues(source["subs"], project.Speaker);
 	        this.reverb = this.convertValues(source["reverb"], project.Reverb);
 	        this.rt60Sec = source["rt60Sec"];
+	        this.volumeM3 = source["volumeM3"];
+	        this.q = source["q"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

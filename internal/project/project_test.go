@@ -1,8 +1,8 @@
 package project_test
 
 import (
+	"encoding/json"
 	"errors"
-	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -44,10 +44,9 @@ func TestClamp(t *testing.T) {
 	p := project.New()
 	p.PA.LowCutHz = 5000
 	p.Reverb.DecayScale = -1
-	p.Crowd.Seed = -4
 	p.Spatial.HrirSet = "nonexistent"
 	p.Normalize()
-	if p.PA.LowCutHz != 200 || p.Reverb.DecayScale != 0.5 || p.Crowd.Seed != 0 {
+	if p.PA.LowCutHz != 200 || p.Reverb.DecayScale != 0.5 {
 		t.Errorf("clamp failed: %+v", p)
 	}
 	if p.Spatial.HrirSet != "synthetic" {
@@ -63,9 +62,6 @@ func TestSetString(t *testing.T) {
 	if err := params.SetString(&p, "pa.lowCutHz", "9999"); err != nil || p.PA.LowCutHz != 200 {
 		t.Fatalf("clamp on set: %v %v", err, p.PA.LowCutHz)
 	}
-	if err := params.SetString(&p, "crowd.seed", "7.4"); err != nil || p.Crowd.Seed != 7 {
-		t.Fatalf("int: %v %v", err, p.Crowd.Seed)
-	}
 	if params.SetString(&p, "pa.nope", "1") == nil {
 		t.Error("unknown path accepted")
 	}
@@ -80,7 +76,6 @@ func TestSetString(t *testing.T) {
 func TestSaveLoadRoundTripAndMissingFields(t *testing.T) {
 	p := project.New()
 	p.Sources = []project.Source{{ID: "vo", Path: "/a.wav", Role: project.RoleVocal, GainDb: -2}}
-	p.Crowd.Keyframes = []project.Keyframe{{T: 0, Cheer: 0.9}}
 	path := filepath.Join(t.TempDir(), "p.json")
 	if err := project.Save(path, p); err != nil {
 		t.Fatal(err)
@@ -89,7 +84,7 @@ func TestSaveLoadRoundTripAndMissingFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(q.Sources) != 1 || q.Sources[0].GainDb != -2 || q.Crowd.Keyframes[0].Cheer != 0.9 {
+	if len(q.Sources) != 1 || q.Sources[0].GainDb != -2 {
 		t.Errorf("round trip mismatch: %+v", q)
 	}
 
@@ -110,22 +105,20 @@ func TestSoundPresetRoundTrip(t *testing.T) {
 	p := project.New()
 	p.Sources = []project.Source{{ID: "a", Path: "/a.wav"}}
 	p.Listener.X = 7
-	p.Crowd.Keyframes = []project.Keyframe{{T: 1, Cheer: 1}}
 	p.PA.LowCutHz = 100
 	p.Sub.LevelDb = 8
-	p.Crowd.Seed = 5
 	sp := project.ExtractSoundPreset(p)
 
-	// 別のプロジェクトに適用しても、素材・座席・タイムラインは変わらない
+	// 別のプロジェクトに適用しても、素材・座席は変わらない
 	q := project.New()
 	q.Sources = []project.Source{{ID: "b", Path: "/b.wav"}}
 	q.Listener.X = -3
 	r := q.ApplySoundPreset(sp)
-	if r.PA.LowCutHz != 100 || r.Sub.LevelDb != 8 || r.Crowd.Seed != 5 {
+	if r.PA.LowCutHz != 100 || r.Sub.LevelDb != 8 {
 		t.Errorf("preset not applied: %+v", r.PA)
 	}
-	if r.Sources[0].ID != "b" || r.Listener.X != -3 || len(r.Crowd.Keyframes) != 0 {
-		t.Error("preset must not touch sources/listener/timeline")
+	if r.Sources[0].ID != "b" || r.Listener.X != -3 {
+		t.Error("preset must not touch sources/listener")
 	}
 }
 
@@ -176,21 +169,18 @@ func TestPresetStore(t *testing.T) {
 	}
 }
 
-func TestNormalizeCrowdTimeline(t *testing.T) {
-	p := project.New()
-	p.Crowd.Keyframes = []project.Keyframe{{T: 5, Cheer: 2}, {T: -3, Cheer: -1}, {T: 1, Cheer: 0.5}, {T: math.NaN(), Cheer: 1}}
-	p.Crowd.ClapRanges = []project.ClapRange{
-		{Start: 20, End: 30}, {Start: 5, End: 3}, {Start: -4, End: 10}, {Start: 8, End: 12}, {Start: 40, End: 40},
+// 客席(歓声・手拍子)の機能を削除する前のプロジェクトとプリセットも、そのまま読める(古い項目は無視する)。
+func TestParseProjectWithRemovedCrowd(t *testing.T) {
+	p, err := project.Parse([]byte(`{"version":1,"pa":{"lowCutHz":60},"crowd":{"density":0.7,"levelDb":-6,"keyframes":[{"t":0,"cheer":1}],"clapRanges":[{"start":1,"end":2}]}}`))
+	if err != nil {
+		t.Fatal(err)
 	}
-	p.Normalize()
-	kf := p.Crowd.Keyframes
-	if len(kf) != 3 || kf[0] != (project.Keyframe{T: 0, Cheer: 0}) || kf[1] != (project.Keyframe{T: 1, Cheer: 0.5}) || kf[2] != (project.Keyframe{T: 5, Cheer: 1}) {
-		t.Errorf("keyframes: %+v", kf)
+	if p.PA.LowCutHz != 60 {
+		t.Errorf("pa not read: %+v", p.PA)
 	}
-	// 逆順・長さ0は捨て、負の開始は0に、重なる区間は結合する
-	want := []project.ClapRange{{Start: 0, End: 12}, {Start: 20, End: 30}}
-	if len(p.Crowd.ClapRanges) != 2 || p.Crowd.ClapRanges[0] != want[0] || p.Crowd.ClapRanges[1] != want[1] {
-		t.Errorf("clap ranges: %+v", p.Crowd.ClapRanges)
+	var sp project.SoundPreset
+	if err := json.Unmarshal([]byte(`{"pa":{"lowCutHz":60},"crowd":{"density":0.7,"seed":1}}`), &sp); err != nil || sp.PA.LowCutHz != 60 {
+		t.Errorf("preset: %v %+v", err, sp.PA)
 	}
 }
 
@@ -214,5 +204,27 @@ func TestHighShelfRange(t *testing.T) {
 		if p.PA.HighShelfDb != want {
 			t.Errorf("highShelfDb %v -> %v, want %v", in, p.PA.HighShelfDb, want)
 		}
+	}
+}
+
+// 低域シェルフは -12〜+9 dB、40〜400 Hz に丸める。既定は 0 dB(何もしない)。
+func TestLowShelfRange(t *testing.T) {
+	p := project.New()
+	if p.PA.LowShelfDb != 0 || p.PA.LowShelfHz != 120 {
+		t.Errorf("defaults: %v dB @ %v Hz", p.PA.LowShelfDb, p.PA.LowShelfHz)
+	}
+	for in, want := range map[float64]float64{9: 9, 12: 9, 4.5: 4.5, -12: -12, -30: -12} {
+		q := project.New()
+		q.PA.LowShelfDb = in
+		q.PA.LowShelfHz = 1
+		q.Normalize()
+		if q.PA.LowShelfDb != want || q.PA.LowShelfHz != 40 {
+			t.Errorf("lowShelfDb %v -> %v (Hz %v), want %v / 40", in, q.PA.LowShelfDb, q.PA.LowShelfHz, want)
+		}
+	}
+	// 旧いプロジェクト(低域シェルフの項目が無い)は既定値で補われ、音が変わらない
+	old, err := project.Parse([]byte(`{"version":1,"pa":{"lowCutHz":50}}`))
+	if err != nil || old.PA.LowShelfDb != 0 {
+		t.Errorf("old project: %+v %v", old.PA, err)
 	}
 }

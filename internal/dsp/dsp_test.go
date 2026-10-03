@@ -157,6 +157,38 @@ func TestHighShelfBoost(t *testing.T) {
 	}
 }
 
+// 低域シェルフは、上げる側・下げる側とも、低域だけが動き高域は変わらない。
+func TestLowShelf(t *testing.T) {
+	const sr = 48000
+	for _, db := range []float64{-12, -6, 6, 9} {
+		lo, hi := sine(30, 0.2, 2*sr, sr), sine(8000, 0.2, 2*sr, sr)
+		LowShelf(sr, 200, db).Process(lo)
+		LowShelf(sr, 200, db).Process(hi)
+		rel := func(x []float32) float64 { return LinToDb(rms(x[sr:]) / (0.2 / math.Sqrt2)) }
+		if got := rel(lo); math.Abs(got-db) > 0.5 {
+			t.Errorf("%+v dB shelf: 30 Hz moved by %.2f dB", db, got)
+		}
+		if got := rel(hi); math.Abs(got) > 0.2 {
+			t.Errorf("%+v dB shelf: 8 kHz moved by %.2f dB", db, got)
+		}
+	}
+	// 0 dB は何もしない
+	x := sine(100, 0.5, 2000, sr)
+	y := append([]float32(nil), x...)
+	LowShelf(sr, 200, 0).Process(y)
+	for i := range x {
+		if math.Abs(float64(x[i]-y[i])) > 1e-6 {
+			t.Fatal("0 dB shelf changed the signal")
+		}
+	}
+	// カットオフ付近では、ゲインのほぼ半分(シェルフの中点)
+	mid := sine(200, 0.2, 2*sr, sr)
+	LowShelf(sr, 200, 6).Process(mid)
+	if got := LinToDb(rms(mid[sr:]) / (0.2 / math.Sqrt2)); math.Abs(got-3) > 0.6 {
+		t.Errorf("midpoint gain %.2f dB, want ~3", got)
+	}
+}
+
 func TestCompressReducesLoudPart(t *testing.T) {
 	const sr = 48000
 	x := sine(1000, 0.9, sr, sr)
@@ -281,7 +313,7 @@ func TestLimiterGuardKeepsResult(t *testing.T) {
 		if with[i] != without[i] {
 			t.Fatalf("guard changed need[%d]: %v vs %v", i, with[i], without[i])
 		}
-		if without[i] == 1 && localMax(buf, i-truePeakTaps/2, i+truePeakTaps/2)*interpGain <= ceil {
+		if without[i] == 1 && localMax(buf, i-guardSpan, i+guardSpan)*interpGain <= ceil {
 			skippable++
 		}
 	}
@@ -324,5 +356,80 @@ func TestLR4Crossover(t *testing.T) {
 		case f <= fc/4 && gHi > 0.01:
 			t.Errorf("%v Hz: high side leaks %.1f dB", f, LinToDb(gHi))
 		}
+	}
+}
+
+// refTruePeak は、理想に近い補間(窓つきsinc、位相16分割、±64サンプル)で求めたトゥルーピークの最大値。
+// 信号の外は 0 として扱う(limiter の推定と別の方式で確認するため)。
+func refTruePeak(ch []float32, from, to int) float64 {
+	peak := 0.0
+	for n := from; n < to; n++ {
+		for f := 0.0; f < 1; f += 1.0 / 16 {
+			sum := 0.0
+			for k := -64; k <= 64; k++ {
+				j := n + k
+				if j < 0 || j >= len(ch) {
+					continue
+				}
+				tt := float64(k) - f
+				s := 1.0
+				if tt != 0 {
+					s = math.Sin(math.Pi*tt) / (math.Pi * tt)
+				}
+				sum += float64(ch[j]) * s * (0.5 + 0.5*math.Cos(math.Pi*tt/65))
+			}
+			peak = math.Max(peak, math.Abs(sum))
+		}
+	}
+	return peak
+}
+
+// 信号の先頭・末尾にあるピークでも上限を守る(範囲外を1で埋めていたころは、端で上限を超えていた)。
+func TestTruePeakLimitEdges(t *testing.T) {
+	const sr = 48000
+	ceil := DbToLin(-1)
+	for _, c := range []struct {
+		name string
+		make func() []float32
+	}{
+		{"start", func() []float32 { x := sine(1000, 1.0, 4000, sr); return x }}, // 先頭から大振幅
+		{"end", func() []float32 {
+			x := sine(1000, 1.0, 4000, sr)
+			for i := 0; i < 3900; i++ {
+				x[i] *= 0.05
+			}
+			return x
+		}},
+		{"fs/4", func() []float32 { x := sine(12000, 1.6, 4000, sr); return x }}, // サンプル間ピークが出る
+		{"impulse at 0", func() []float32 { x := make([]float32, 4000); x[0], x[1] = 2, -2; return x }},
+		{"impulse at end", func() []float32 { x := make([]float32, 4000); x[3999], x[3998] = 2, -2; return x }},
+	} {
+		x := c.make()
+		buf := [][]float32{x, append([]float32(nil), x...)}
+		TruePeakLimit(buf, sr, -1)
+		n := len(x)
+		for _, region := range [][2]int{{0, 200}, {n - 200, n}} {
+			if got := refTruePeak(buf[0], region[0], region[1]); got > ceil*1.03 {
+				t.Errorf("%s: peak %.3f (%.2f dBTP) over the ceiling %.3f in [%d,%d)", c.name, got, LinToDb(got), ceil, region[0], region[1])
+			}
+		}
+	}
+}
+
+// 帯域いっぱいのノイズ(振幅1.5という極端な入力)でも、上限を約1 dB以内で守る(粗い推定だけだと約1.9 dB超えた)。
+func TestTruePeakLimitNoise(t *testing.T) {
+	const sr = 48000
+	rng := rand.New(rand.NewSource(5))
+	x := make([]float32, sr)
+	for i := range x {
+		x[i] = (rng.Float32()*2 - 1) * 1.5
+	}
+	buf := [][]float32{x}
+	TruePeakLimit(buf, sr, -1)
+	ceil := DbToLin(-1)
+	got := refTruePeak(buf[0], 100, len(x)-100)
+	t.Logf("noise: reference true peak %.2f dBTP (ceiling -1)", LinToDb(got))
+	if got > ceil*1.12 { // +1 dB まで(測定は約0.8 dB)
+		t.Errorf("noise true peak %.2f dBTP", LinToDb(got))
 	}
 }

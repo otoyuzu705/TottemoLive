@@ -20,7 +20,6 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 	dir := t.TempDir()
 	base := testProject(makeSource(t, dir))
 	base.Venue.Preset = "livehouse"
-	base.Crowd.ClapRanges = []project.ClapRange{{Start: 0, End: 3}}
 
 	cases := []struct {
 		name   string
@@ -29,24 +28,27 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 	}{
 		{"reverb.mix", func(p *project.Project) { p.Reverb.Mix = 0.6 }, nil},
 		{"spatial.directLevelDb", func(p *project.Project) { p.Spatial.DirectLevelDb = -3 }, nil},
-		{"crowd.levelDb", func(p *project.Project) { p.Crowd.LevelDb = 0 }, nil},
 		{"output.targetLufs", func(p *project.Project) { p.Output.TargetLufs = -18 }, nil},
-		{"pa.lowCutHz", func(p *project.Project) { p.PA.LowCutHz = 120 }, []string{"pa:0", "direct", "reverb"}},
-		{"source gain", func(p *project.Project) { p.Sources[0].GainDb = -3 }, []string{"pa:0", "direct", "reverb"}},
+		{"pa.inputLufs", func(p *project.Project) { p.PA.InputLufs = -14 }, []string{"pa:0", "paSpectrum", "direct", "reverb"}},
+		{"pa.autoLevel", func(p *project.Project) { p.PA.AutoLevel = "off" }, []string{"pa:0", "paSpectrum", "direct", "reverb"}},
+		{"pa.lowShelfDb", func(p *project.Project) { p.PA.LowShelfDb = 6 }, []string{"pa:0", "paSpectrum", "direct", "reverb"}},
+		{"pa.lowShelfHz", func(p *project.Project) { p.PA.LowShelfHz = 200 }, []string{"pa:0", "paSpectrum", "direct", "reverb"}},
+		{"pa.lowCutHz", func(p *project.Project) { p.PA.LowCutHz = 120 }, []string{"pa:0", "paSpectrum", "direct", "reverb"}},
+		{"source gain", func(p *project.Project) { p.Sources[0].GainDb = -3 }, []string{"inputLevel", "pa:0", "paSpectrum", "direct", "reverb"}},
 		{"reverb.decayScale", func(p *project.Project) { p.Reverb.DecayScale = 0.6 }, []string{"reverb"}},
+		{"reverb.highDecayScale", func(p *project.Project) { p.Reverb.HighDecayScale = 0.3 }, []string{"reverb"}},
+		{"reverb.highDecayHz", func(p *project.Project) { p.Reverb.HighDecayHz = 8000 }, []string{"reverb"}},
 		{"reverb.lowCoherence", func(p *project.Project) { p.Reverb.LowCoherence = 0.2 }, []string{"reverb"}},
 		{"reverb.lowDecayScale", func(p *project.Project) { p.Reverb.LowDecayScale = 2 }, []string{"reverb"}},
 		{"reverb.lowLevelDb", func(p *project.Project) { p.Reverb.LowLevelDb = 9 }, []string{"reverb"}},
 		{"reverb.lowCrossoverHz", func(p *project.Project) { p.Reverb.LowCrossoverHz = 400 }, []string{"reverb"}},
 		{"reverb.preDelayMs", func(p *project.Project) { p.Reverb.PreDelayMs = 90 }, []string{"reverb"}},
-		{"sub.levelDb", func(p *project.Project) { p.Sub.LevelDb = 9 }, []string{"direct"}},
-		{"sub.crossoverHz", func(p *project.Project) { p.Sub.CrossoverHz = 120 }, []string{"direct"}},
-		{"sub.enabled", func(p *project.Project) { p.Sub.Enabled = "off" }, []string{"direct"}},
+		{"sub.levelDb", func(p *project.Project) { p.Sub.LevelDb = 9 }, []string{"direct", "reverb"}},
+		{"sub.crossoverHz", func(p *project.Project) { p.Sub.CrossoverHz = 120 }, []string{"direct", "reverb"}},
+		{"sub.enabled", func(p *project.Project) { p.Sub.Enabled = "off" }, []string{"direct", "reverb"}},
 		{"venue.subs", func(p *project.Project) { p.Venue.Subs[0].X = -3 }, []string{"direct"}},
 		{"spatial.distanceRolloff", func(p *project.Project) { p.Spatial.DistanceRolloff = 0.5 }, []string{"direct"}},
-		{"crowd.seed", func(p *project.Project) { p.Crowd.Seed = 9 }, []string{"crowd"}},
-		{"crowd.keyframes", func(p *project.Project) { p.Crowd.Keyframes = nil }, []string{"crowd"}},
-		{"listener", func(p *project.Project) { p.Listener.X = 3 }, []string{"direct", "crowd"}},
+		{"listener", func(p *project.Project) { p.Listener.X = 3 }, []string{"direct"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

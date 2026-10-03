@@ -7,3 +7,7 @@
 # 生成された音声
 *.wav
 /frontend/package.json.md5
+
+# CI/CD配布パッケージとPythonキャッシュ
+/dist/
+/scripts/__pycache__/

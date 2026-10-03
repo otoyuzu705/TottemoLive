@@ -15,7 +15,7 @@ import (
 type ParamSpec struct {
 	Path     string   `json:"path"`    // Project内の位置。例 "pa.lowCutHz"
 	Label    string   `json:"label"`   // UIの表示名
-	Group    string   `json:"group"`   // pa / spatial / reverb / crowd / master
+	Group    string   `json:"group"`   // pa / sub / spatial / reverb / master
 	Kind     string   `json:"kind"`    // "float" / "int" / "enum"
 	Unit     string   `json:"unit"`    // "Hz" "dB" "ms" など
 	Min      float64  `json:"min"`     //
@@ -45,7 +45,12 @@ func advanced(s ParamSpec) ParamSpec { s.Advanced = true; return s }
 // specs が音作りパラメーターの表。範囲と既定値は設計書の表が正で、M2で聴きながら見直す前提の仮の値。
 // 残響の既定値(preDelayMs, highDampHz)は会場プリセットごとに上書きされる。
 var specs = []ParamSpec{
+	{Path: "pa.autoLevel", Label: "入力レベル合わせ", Group: "pa", Kind: KindEnum,
+		Options: []string{"off", "on"}, Default: 1, Scale: "linear"},
+	f("pa.inputLufs", "入力の基準LUFS", "pa", "LUFS", -30, -8, 0.5, -20),
 	logScale(f("pa.lowCutHz", "低域カット", "pa", "Hz", 20, 200, 1, 35)),
+	logScale(f("pa.lowShelfHz", "低域シェルフ周波数", "pa", "Hz", 40, 400, 5, 120)),
+	f("pa.lowShelfDb", "低域シェルフ量", "pa", "dB", -12, 9, 0.5, 0),
 	logScale(f("pa.highShelfHz", "高域シェルフ周波数", "pa", "Hz", 2000, 12000, 100, 6000)),
 	f("pa.highShelfDb", "高域シェルフ量", "pa", "dB", -12, 6, 0.5, -3),
 	f("pa.compThresholdDb", "コンプ スレッショルド", "pa", "dB", -40, 0, 0.5, -18),
@@ -69,16 +74,12 @@ var specs = []ParamSpec{
 	f("reverb.preDelayMs", "プリディレイ", "reverb", "ms", 0, 150, 1, 40),
 	f("reverb.decayScale", "残響の長さ", "reverb", "倍", 0.5, 1.2, 0.01, 1.0),
 	logScale(f("reverb.highDampHz", "残響の高域ダンプ", "reverb", "Hz", 2000, 16000, 100, 8000)),
+	f("reverb.highDecayScale", "高域の残響の長さ", "reverb", "倍", 0.2, 1, 0.05, 0.6),
+	advanced(logScale(f("reverb.highDecayHz", "高域の残響の境界周波数", "reverb", "Hz", 2000, 12000, 100, 4000))),
 	f("reverb.lowCoherence", "低域の左右の相関", "reverb", "", 0, 1, 0.05, 1),
 	f("reverb.lowDecayScale", "低域の残響の長さ", "reverb", "倍", 0.5, 2.5, 0.05, 1.3),
 	f("reverb.lowLevelDb", "低域の残響レベル", "reverb", "dB", -12, 12, 0.5, 3),
 	advanced(logScale(f("reverb.lowCrossoverHz", "低域の境界周波数", "reverb", "Hz", 80, 500, 5, 250))),
-
-	f("crowd.density", "客席の密度", "crowd", "", 0, 1, 0.01, 0.7),
-	f("crowd.levelDb", "客席レベル", "crowd", "dB", -30, 6, 0.5, -6),
-	f("crowd.spreadM", "散布半径", "crowd", "m", 2, 30, 0.5, 10),
-	{Path: "crowd.seed", Label: "配置の乱数シード", Group: "crowd", Kind: KindInt,
-		Min: 0, Max: 999999, Step: 1, Default: 1, Scale: "linear"},
 
 	f("output.targetLufs", "ラウドネス目標", "master", "LUFS", -24, -9, 0.5, -14),
 	f("output.ceilingDbTp", "ピーク上限", "master", "dBTP", -3, 0, 0.1, -1),

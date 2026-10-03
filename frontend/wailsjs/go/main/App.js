@@ -70,6 +70,10 @@ export function RenderPreview(arg1) {
   return window['go']['main']['App']['RenderPreview'](arg1);
 }
 
+export function RenderPreviewWindow(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RenderPreviewWindow'](arg1, arg2, arg3);
+}
+
 export function SaveProject(arg1, arg2) {
   return window['go']['main']['App']['SaveProject'](arg1, arg2);
 }

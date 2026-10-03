@@ -4,13 +4,33 @@
   import SourcesPanel from './lib/SourcesPanel.svelte'
   import VenuePanel from './lib/VenuePanel.svelte'
   import VenueMap from './lib/VenueMap.svelte'
+  import Spectrum from './lib/Spectrum.svelte'
   import ParamPanel from './lib/ParamPanel.svelte'
   import Waveform from './lib/Waveform.svelte'
   import Transport from './lib/Transport.svelte'
-  import Timeline from './lib/Timeline.svelte'
   import ExportDialog from './lib/ExportDialog.svelte'
 
   let showExport = $state(false)
+
+  // 中央に表示するもの: 会場マップ / スペクトラム。選んだ表示は次回の起動でも使う
+  type CenterView = 'map' | 'spectrum'
+  const CENTER_KEY = 'tottemolive.centerView'
+  function loadCenterView(): CenterView {
+    try {
+      return localStorage.getItem(CENTER_KEY) === 'spectrum' ? 'spectrum' : 'map'
+    } catch {
+      return 'map' // ストレージが使えなくても動く
+    }
+  }
+  let centerView = $state<CenterView>(loadCenterView())
+  function chooseCenter(v: CenterView) {
+    centerView = v
+    try {
+      localStorage.setItem(CENTER_KEY, v)
+    } catch {
+      // 保存できなくても動作には影響しない
+    }
+  }
 
   onMount(() => {
     app.init().catch((e) => app.fail(e))
@@ -47,14 +67,21 @@
       <SourcesPanel />
       <VenuePanel />
     </aside>
-    <div class="center"><VenueMap /></div>
+    <div class="center">
+      <div class="tabs" role="tablist" aria-label="中央の表示">
+        <button role="tab" aria-selected={centerView === 'map'} class:active={centerView === 'map'} onclick={() => chooseCenter('map')}>会場マップ</button>
+        <button role="tab" aria-selected={centerView === 'spectrum'} class:active={centerView === 'spectrum'} onclick={() => chooseCenter('spectrum')}>スペクトラム</button>
+      </div>
+      <div class="view">
+        {#if centerView === 'map'}<VenueMap />{:else}<Spectrum />{/if}
+      </div>
+    </div>
     <aside class="right"><ParamPanel /></aside>
   </main>
 
   <footer>
     <Transport />
     <Waveform />
-    <Timeline />
   </footer>
 
   {#if app.toast}
@@ -74,7 +101,13 @@
   aside, .center { padding: 12px; min-height: 0; overflow-y: auto; }
   .left { border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 18px; }
   .right { border-left: 1px solid var(--line); overflow: hidden; }
-  .center { overflow: hidden; }
+  .center { overflow: hidden; display: flex; flex-direction: column; }
+  .tabs { display: flex; margin-bottom: 8px; }
+  .tabs button { border-radius: 0; }
+  .tabs button:first-child { border-radius: 5px 0 0 5px; }
+  .tabs button:last-child { border-radius: 0 5px 5px 0; margin-left: -1px; }
+  .tabs button.active { background: var(--accent-dim); border-color: var(--accent); }
+  .view { flex: 1; min-height: 0; }
   footer { border-top: 1px solid var(--line); padding: 10px 12px 12px; display: grid; gap: 10px; background: var(--panel); }
   .toast { position: fixed; bottom: 150px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--warn); border-radius: 6px; padding: 8px 14px; max-width: 70vw; z-index: 20; }
 </style>

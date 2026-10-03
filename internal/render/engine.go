@@ -19,12 +19,14 @@ import (
 // (漏れると、値を変えても音が変わらないバグになる)。
 // 段(スロット)ごとに最新の1件だけを持つので、メモリは曲の長さに比例した一定量で収まる。
 type Engine struct {
-	cache   *cache       // nil ならキャッシュなし(書き出し)
-	decodes atomic.Int64 // デコードした回数(テスト用)
+	cache *cache // nil ならキャッシュなし(書き出し)
+	// analyzePA が true のとき、結果にPA出力の帯域レベル(スペクトラム表示用)を含める。プレビュー用だけ。
+	analyzePA bool
+	decodes   atomic.Int64 // デコードした回数(テスト用)
 }
 
 // NewEngine はキャッシュ付きのエンジンを返す。
-func NewEngine() *Engine { return &Engine{cache: newCache()} }
+func NewEngine() *Engine { return &Engine{cache: newCache(), analyzePA: true} }
 
 // Preview は曲全体を、書き出しと同じ処理でレンダリングする(段ごとのキャッシュを使う)。
 // 音量も曲全体で測るので、書き出しと同じになる。
