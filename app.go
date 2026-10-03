@@ -304,14 +304,41 @@ func (a *App) DeleteSoundPreset(name string) error { return a.presets.Delete(nam
 
 // --- レンダリング ---
 
-// RenderPreview は曲全体を書き出しと同じ処理でレンダリングし、プレビューURL(/preview/{id}.wav)を返す。
-// 段ごとのキャッシュを使う。新しい要求が来ると進行中のプレビューは中断され、
-// 中断された呼び出しは空文字とnilを返す(フロントは無視する)。
-func (a *App) RenderPreview(p project.Project) (string, error) {
+// PreviewResult はプレビューのレンダリング結果。URL が空なら、新しい要求に追い越されて中断された
+// (フロントは無視する)。BandsURL はPA出力の帯域レベル(リトルエンディアンの float32、フレーム × Bands の行優先、
+// dB、0 dBFS の正弦波 = 0 dB)で、フレーム f の中心は f × HopSec 秒。OffsetDb は、PA出力の全体の大きさを
+// 耳に届く出力にそろえる値(dB)。スペクトラム表示で「PAから出た音」を重ねるために使う。
+type PreviewResult struct {
+	URL      string  `json:"url"`
+	BandsURL string  `json:"bandsUrl"`
+	Bands    int     `json:"bands"`
+	Frames   int     `json:"frames"`
+	HopSec   float64 `json:"hopSec"`
+	OffsetDb float64 `json:"offsetDb"`
+}
+
+// RenderPreview は曲全体を書き出しと同じ処理でレンダリングし、プレビューのURL(/preview/{id}.wav)と、
+// PA出力の帯域レベルのURL(/preview/{id}.bands)を返す。段ごとのキャッシュを使う。
+// 新しい要求が来ると進行中のプレビューは中断され、中断された呼び出しは URL が空の結果とnilを返す。
+func (a *App) RenderPreview(p project.Project) (PreviewResult, error) {
 	_, ctx, done := a.jobs.Begin(a.ctx, "preview")
 	defer done()
 	res, err := a.engine.Preview(ctx, p, nil)
-	return a.previewURL(ctx, res, err)
+	if err != nil {
+		if ctx.Err() != nil {
+			return PreviewResult{}, nil
+		}
+		return PreviewResult{}, err
+	}
+	wav := audio.WAV16(res.Audio, res.SampleRate)
+	if res.PA == nil {
+		return PreviewResult{URL: a.store.Put(wav)}, nil
+	}
+	url, bandsURL := a.store.PutWithBands(wav, res.PA.Series.Bytes())
+	return PreviewResult{
+		URL: url, BandsURL: bandsURL,
+		Bands: res.PA.Series.Bands, Frames: res.PA.Series.Frames, HopSec: res.PA.Series.HopSec, OffsetDb: res.PA.OffsetDb,
+	}, nil
 }
 
 // RenderOriginal は曲全体の原音(A/B比較用)のURLを返す。ラウドネスはプレビューと同じ目標にそろえる。
