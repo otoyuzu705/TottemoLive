@@ -21,12 +21,6 @@
     "decayScale": 1,
     "highDampHz": 8000
   },
-  "crowd": {
-    "density": 0.9,
-    "levelDb": -3,
-    "spreadM": 14,
-    "seed": 1
-  },
   "output": {
     "sampleRate": 48000,
     "bitDepth": 24,

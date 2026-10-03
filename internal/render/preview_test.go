@@ -20,7 +20,6 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 	dir := t.TempDir()
 	base := testProject(makeSource(t, dir))
 	base.Venue.Preset = "livehouse"
-	base.Crowd.ClapRanges = []project.ClapRange{{Start: 0, End: 3}}
 
 	cases := []struct {
 		name   string
@@ -29,7 +28,6 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 	}{
 		{"reverb.mix", func(p *project.Project) { p.Reverb.Mix = 0.6 }, nil},
 		{"spatial.directLevelDb", func(p *project.Project) { p.Spatial.DirectLevelDb = -3 }, nil},
-		{"crowd.levelDb", func(p *project.Project) { p.Crowd.LevelDb = 0 }, nil},
 		{"output.targetLufs", func(p *project.Project) { p.Output.TargetLufs = -18 }, nil},
 		{"pa.inputLufs", func(p *project.Project) { p.PA.InputLufs = -14 }, []string{"pa:0", "paSpectrum", "direct", "reverb"}},
 		{"pa.autoLevel", func(p *project.Project) { p.PA.AutoLevel = "off" }, []string{"pa:0", "paSpectrum", "direct", "reverb"}},
@@ -50,9 +48,7 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 		{"sub.enabled", func(p *project.Project) { p.Sub.Enabled = "off" }, []string{"direct", "reverb"}},
 		{"venue.subs", func(p *project.Project) { p.Venue.Subs[0].X = -3 }, []string{"direct"}},
 		{"spatial.distanceRolloff", func(p *project.Project) { p.Spatial.DistanceRolloff = 0.5 }, []string{"direct"}},
-		{"crowd.seed", func(p *project.Project) { p.Crowd.Seed = 9 }, []string{"crowd"}},
-		{"crowd.keyframes", func(p *project.Project) { p.Crowd.Keyframes = nil }, []string{"crowd"}},
-		{"listener", func(p *project.Project) { p.Listener.X = 3 }, []string{"direct", "crowd"}},
+		{"listener", func(p *project.Project) { p.Listener.X = 3 }, []string{"direct"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

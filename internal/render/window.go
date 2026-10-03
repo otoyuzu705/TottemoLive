@@ -5,7 +5,6 @@ import (
 	"errors"
 	"math"
 
-	"tottemolive/internal/crowd"
 	"tottemolive/internal/dsp"
 	"tottemolive/internal/project"
 	"tottemolive/internal/spatial"
@@ -77,22 +76,18 @@ func (e *Engine) previewWindow(ctx context.Context, p project.Project, startSec,
 	seg := sumBusRange(pa.bufs, a, min(s1, songLen))
 	n := s1 - a // 区間の出力の長さ(区間の先頭 = 曲の a サンプル目)
 
-	var direct, reverb, crowdSig [][]float32
-	var derr, rerr, cerr error
-	done := make(chan struct{}, 3)
+	var direct, reverb [][]float32
+	var derr, rerr error
+	done := make(chan struct{}, 2)
 	go func() { direct, derr = directCompute(ctx, pp, seg, n); done <- struct{}{} }()
 	go func() { reverb, rerr = reverbCompute(ctx, pp, seg, ir, n); done <- struct{}{} }()
-	go func() {
-		crowdSig, cerr = crowd.Render(ctx, p.Crowd, p.Listener, pp.set, sampleRate, s0, s1-s0)
-		done <- struct{}{}
-	}()
-	for range 3 {
+	for range 2 {
 		<-done
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := errors.Join(derr, rerr, cerr); err != nil {
+	if err := errors.Join(derr, rerr); err != nil {
 		return nil, err
 	}
 
@@ -100,13 +95,12 @@ func (e *Engine) previewWindow(ctx context.Context, p project.Project, startSec,
 	directW := cropRange(direct, s0-a, s1-a)
 	reverbW := cropRange(reverb, s0-a-revDelay, s1-a-revDelay)
 	gains := mixGainsFor(p, pp.pr)
-	out := mix(gains, directW, reverbW, crowdSig, 0)
+	out := mix(gains, directW, reverbW, 0)
 
 	if s0 == 0 && s1 == outLen {
 		master(out, sampleRate, p.Output) // 窓が曲全体なら、推定せず正確に測れる
 	} else {
-		music := mix(mixGains{direct: gains.direct, reverb: gains.reverb}, directW, reverbW, crowdSig, 0) // 客席を除いた音楽
-		gainDb, ok, err := e.estimateMasterGainDb(ctx, pp, pa, music, out, gains, s0, s1, revDelay, songLen, outLen)
+		gainDb, ok, err := e.estimateMasterGainDb(p, pa, out, s0, s1, revDelay, songLen)
 		if err != nil {
 			return nil, err
 		}
@@ -124,19 +118,14 @@ func (e *Engine) previewWindow(ctx context.Context, p project.Project, startSec,
 }
 
 // estimateMasterGainDb は、先行プレビューに掛けるラウドネス調整のゲイン(dB)を推定する。
-// 曲全体の出力のラウドネスは、曲全体を処理し終わるまで分からない。そこで、次のように推定する。
-//
-//   - 音楽(直接音 + 残響): ミックス後の音楽とPA出力(バス)のラウドネスの差は、直接音・残響が時間に依らない
-//     線形の処理なので、曲のどの位置でもほぼ一定になる。窓での差(音楽 − バス)を、曲全体のバスのラウドネスに足して、
-//     曲全体の音楽のラウドネスにする(窓だけのラウドネスで合わせると、サビと静かな部分とで音量が大きく変わる)
-//   - 客席: 曲全体を処理すると時間がかかる(曲全体の音楽の処理と同じくらい)ので、曲に散らした数か所を
-//     処理して、そのラウドネスで代用する
-//   - 2つを、パワーの和で足す(客席は音楽と無相関なので)
-//
-// 窓が無音などで測れないときは ok=false(ゲインを掛けない)。music は客席を除いた窓の出力、out は客席を含む窓の出力
-// (どちらもゲインを掛ける前。曲の s0〜s1)。
-func (e *Engine) estimateMasterGainDb(ctx context.Context, pp *prepared, pa paResult, music, out [][]float32, g mixGains,
-	s0, s1, revDelay, songLen, outLen int) (gainDb float64, ok bool, err error) {
+// 曲全体の出力のラウドネスは、曲全体を処理し終わるまで分からない。一方、直接音・残響・ミックスは時間に依らない
+// 線形の処理なので、「ミックス後の出力のラウドネス」と「PA出力(バス)のラウドネス」の差は、曲のどの位置でも
+// ほぼ一定になる。そこで、窓での差(出力 − バス)を、曲全体のバスのラウドネスに足して、曲全体の出力の
+// ラウドネスを推定する(窓だけのラウドネスで合わせると、サビと静かな部分とで音量が大きく変わってしまう)。
+// 窓が無音などで測れないときは ok=false(ゲインを掛けない)。
+// out はゲインを掛ける前の窓の出力(曲の s0〜s1)。
+func (e *Engine) estimateMasterGainDb(p project.Project, pa paResult, out [][]float32,
+	s0, s1, revDelay, songLen int) (gainDb float64, ok bool, err error) {
 	whole, err := memo(e.cache, "busLufs", hashKey(pa.key), func() (float64, error) {
 		return dsp.IntegratedLUFS(sumBusRange(pa.bufs, 0, songLen), sampleRate), nil
 	})
@@ -146,61 +135,11 @@ func (e *Engine) estimateMasterGainDb(ctx context.Context, pp *prepared, pa paRe
 	// 窓の出力は、バスより revDelay ぶん遅れて届くので、同じ音の区間で比べる
 	b0, b1 := min(max(s0-revDelay, 0), songLen), min(max(s1-revDelay, 0), songLen)
 	busWin := dsp.IntegratedLUFS(sumBusRange(pa.bufs, b0, b1), sampleRate)
-	musicWin := dsp.IntegratedLUFS(music, sampleRate)
-	if bad(whole) || bad(busWin) || bad(musicWin) {
+	outWin := dsp.IntegratedLUFS(out, sampleRate)
+	if bad(whole) || bad(busWin) || bad(outWin) {
 		return 0, false, nil
 	}
-	total := math.Pow(10, (whole+(musicWin-busWin))/10)
-	if g.crowd > 0 {
-		c, err := crowdSampleLufs(ctx, pp, g.crowd, outLen)
-		if err != nil {
-			return 0, false, err
-		}
-		if !bad(c) {
-			total += math.Pow(10, c/10)
-		}
-	}
-	return pp.p.Output.TargetLufs - 10*math.Log10(total), true, nil
-}
-
-// 客席のラウドネスの見積もりに使う区間の数と長さ(秒)
-const (
-	crowdSamples   = 6
-	crowdSampleSec = 3
-)
-
-// crowdSampleLufs は、曲全体(outLen)に等間隔に散らした区間の客席信号(ゲイン gain を掛けたもの)のラウドネスを返す。
-// 無音(客席なし)なら -Inf。
-func crowdSampleLufs(ctx context.Context, pp *prepared, gain float32, outLen int) (float64, error) {
-	p := pp.p
-	n := crowdSampleSec * sampleRate
-	if outLen <= crowdSamples*n {
-		sig, err := crowd.Render(ctx, p.Crowd, p.Listener, pp.set, sampleRate, 0, outLen)
-		return crowdLufs(sig, gain), err
-	}
-	joined := [][]float32{nil, nil}
-	for k := 0; k < crowdSamples; k++ {
-		start := (outLen - n) * k / (crowdSamples - 1)
-		sig, err := crowd.Render(ctx, p.Crowd, p.Listener, pp.set, sampleRate, start, n)
-		if err != nil {
-			return 0, err
-		}
-		for c := range joined {
-			joined[c] = append(joined[c], sig[c]...)
-		}
-	}
-	return crowdLufs(joined, gain), nil
-}
-
-func crowdLufs(sig [][]float32, gain float32) float64 {
-	scaled := make([][]float32, len(sig))
-	for c, ch := range sig {
-		scaled[c] = make([]float32, len(ch))
-		for i, v := range ch {
-			scaled[c][i] = v * gain
-		}
-	}
-	return dsp.IntegratedLUFS(scaled, sampleRate)
+	return p.Output.TargetLufs - (whole + (outWin - busWin)), true, nil
 }
 
 func bad(v float64) bool { return math.IsInf(v, 0) || math.IsNaN(v) }

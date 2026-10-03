@@ -57,7 +57,6 @@ func bassProject(src string) project.Project {
 	p.Sources = []project.Source{{ID: "s", Path: src, Role: project.RoleMix}}
 	p.Venue = project.DefaultVenue()
 	p.Reverb.Mix = 0 // 純音は、ノイズ状の残響IRを通ると耳ごとにランダムな位相・振幅になるので、直接音だけで比べる
-	p.Crowd.Density = 0
 	p.PA.Drive = 0
 	p.PA.CompRatio = 1 // 帯域の比を見るので、非線形な段は外す
 	return p

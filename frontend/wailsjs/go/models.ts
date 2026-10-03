@@ -104,75 +104,6 @@ export namespace params {
 
 export namespace project {
 	
-	export class ClapRange {
-	    start: number;
-	    end: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new ClapRange(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.start = source["start"];
-	        this.end = source["end"];
-	    }
-	}
-	export class Keyframe {
-	    t: number;
-	    cheer: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new Keyframe(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.t = source["t"];
-	        this.cheer = source["cheer"];
-	    }
-	}
-	export class Crowd {
-	    density: number;
-	    levelDb: number;
-	    spreadM: number;
-	    seed: number;
-	    keyframes: Keyframe[];
-	    clapRanges: ClapRange[];
-	
-	    static createFrom(source: any = {}) {
-	        return new Crowd(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.density = source["density"];
-	        this.levelDb = source["levelDb"];
-	        this.spreadM = source["spreadM"];
-	        this.seed = source["seed"];
-	        this.keyframes = this.convertValues(source["keyframes"], Keyframe);
-	        this.clapRanges = this.convertValues(source["clapRanges"], ClapRange);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	
 	export class Listener {
 	    x: number;
 	    y: number;
@@ -386,7 +317,6 @@ export namespace project {
 	    sub: Sub;
 	    spatial: Spatial;
 	    reverb: Reverb;
-	    crowd: Crowd;
 	    output: Output;
 	
 	    static createFrom(source: any = {}) {
@@ -403,7 +333,6 @@ export namespace project {
 	        this.sub = this.convertValues(source["sub"], Sub);
 	        this.spatial = this.convertValues(source["spatial"], Spatial);
 	        this.reverb = this.convertValues(source["reverb"], Reverb);
-	        this.crowd = this.convertValues(source["crowd"], Crowd);
 	        this.output = this.convertValues(source["output"], Output);
 	    }
 	

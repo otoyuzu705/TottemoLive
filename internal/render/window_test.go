@@ -6,8 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-
-	"tottemolive/internal/project"
 )
 
 // 先行プレビューの窓は、曲全体の同じ範囲と(ラウドネスの推定の誤差を除いて)同じ音になる。
@@ -105,8 +103,6 @@ func TestPreviewWindowLoudnessOnLongSong(t *testing.T) {
 		t.Fatalf("ffmpeg: %v %s", err, out)
 	}
 	p.Sources[0].Path = long
-	p.Crowd.Keyframes = []project.Keyframe{{T: 0, Cheer: 0.2}, {T: 20, Cheer: 0.9}, {T: 40, Cheer: 0.2}}
-	p.Crowd.ClapRanges = nil
 	full, err := NewEngine().Preview(context.Background(), p, nil)
 	if err != nil {
 		t.Fatal(err)
