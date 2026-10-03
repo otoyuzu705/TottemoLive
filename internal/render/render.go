@@ -2,8 +2,7 @@
 //
 // 楽曲系統: 音源ごとに(ゲイン → PA質感)を並列に処理 → 合流 →
 // 仮想スピーカー(距離減衰・遅延・空気吸収)→ 直接音(HRIR)+ 会場残響(会場IR)。
-// 客席系統: 強さカーブ → リスナー周囲に散布(位置ごとにHRIR)。
-// 3本をそれぞれのレベルで足し、マスター(ラウドネス → トゥルーピークリミッタ)で仕上げる。
+// 2本をそれぞれのレベルで足し、マスター(ラウドネス → トゥルーピークリミッタ)で仕上げる。
 //
 // PAより後ろの段(距離・遅延・フィルタ・畳み込み)は線形なので、PAの出力を合流してから処理しても
 // 音源ごとに処理して足すのと結果は同じ。非線形なPA質感(コンプ・歪み)だけを音源ごとに並列で回す。
@@ -20,7 +19,6 @@ import (
 
 	"tottemolive/internal/analysis"
 	"tottemolive/internal/audio"
-	"tottemolive/internal/crowd"
 	"tottemolive/internal/dsp"
 	"tottemolive/internal/params"
 	"tottemolive/internal/project"
@@ -119,7 +117,7 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 	srcs := e.sources(p.Sources, prog)
 
 	// 2. 処理
-	steps := newSteps(prog, StageProcess, len(srcs)+5)
+	steps := newSteps(prog, StageProcess, len(srcs)+4)
 	level, err := e.inputLevelStage(ctx, p, srcs)
 	if err != nil {
 		return nil, err
@@ -133,7 +131,7 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 
 	ir := venue.BuildIR(pp.pr, p.Reverb, sampleRate)
 	// 各段の出力の長さは、残響パラメーターを範囲の上限まで振っても収まる値に固定する
-	// (IRの長さがキーに入ると、残響を動かしたとき直接音・客席まで再計算になるため)。
+	// (IRの長さがキーに入ると、残響を動かしたとき直接音まで再計算になるため)。
 	// 実際の長さ(曲 + 現在のIRの尾)へは、ミックスの前に切り詰める
 	total := songLen + maxTailSamples(pp.pr)
 	// 残響は直接音より先に届かない: 最初に届く音(いちばん近いメインスピーカーの直接音)から残響が始まる。
@@ -142,11 +140,11 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 	outLen := songLen + revDelay + len(ir[0])
 
 	// 4つの系統は互いに独立なので並列に回す
-	var direct, reverb, crowdSig [][]float32
+	var direct, reverb [][]float32
 	var paSpec paSpectrumOut
-	var derr, rerr, cerr, aerr error
+	var derr, rerr, aerr error
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		if e.analyzePA {
@@ -164,20 +162,15 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 		reverb, rerr = e.reverbStage(ctx, pp, bus, ir, pa.key, total)
 		steps.done()
 	}()
-	go func() {
-		defer wg.Done()
-		crowdSig, cerr = e.crowdStage(ctx, pp, total)
-		steps.done()
-	}()
 	wg.Wait()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := errors.Join(derr, rerr, cerr, aerr); err != nil {
+	if err := errors.Join(derr, rerr, aerr); err != nil {
 		return nil, err
 	}
 
-	out := mix(mixGainsFor(p, pp.pr), crop(direct, outLen), crop(reverb, outLen-revDelay), crop(crowdSig, outLen), revDelay)
+	out := mix(mixGainsFor(p, pp.pr), crop(direct, outLen), crop(reverb, outLen-revDelay), revDelay)
 	master(out, sampleRate, p.Output)
 	steps.done()
 	res := &Result{Audio: out, SampleRate: sampleRate, LUFS: dsp.IntegratedLUFS(out, sampleRate)}
@@ -654,22 +647,10 @@ func reverbCompute(ctx context.Context, pp *prepared, in, ir [][]float32, total 
 	return out, errors.Join(errs...)
 }
 
-// crowdStage は客席系統。曲頭からの絶対時刻で生成する。
-// 読むもの: crowd.density / spreadM / seed / keyframes / clapRanges、リスナー、spatial.hrirSet、長さ。
-// (crowd.levelDb はミックス段)
-func (e *Engine) crowdStage(ctx context.Context, pp *prepared, total int) ([][]float32, error) {
-	p := pp.p
-	c := p.Crowd
-	key := hashKey(total, c.Density, c.SpreadM, c.Seed, c.Keyframes, c.ClapRanges, p.Listener, p.Spatial.HrirSet)
-	return memo(e.cache, "crowd", key, func() ([][]float32, error) {
-		return crowd.Render(ctx, c, p.Listener, pp.set, sampleRate, 0, total)
-	})
-}
+// mixGains は、ミックスの2本のゲイン(線形)。
+type mixGains struct{ direct, reverb float32 }
 
-// mixGains は、ミックスの3本のゲイン(線形)。
-type mixGains struct{ direct, reverb, crowd float32 }
-
-// mixGainsFor は、直接音・残響・客席のゲインを決める。
+// mixGainsFor は、直接音・残響のゲインを決める。
 //
 // 直接音: spatial.directLevelDb だけ(距離による大きさは、スピーカーごとの距離減衰で既に掛かっている)。
 // 残響: 会場の物理的な値を基準にする。残響(拡散音場)の大きさは、リスナーの位置に依らず一定で、直接音は
@@ -684,17 +665,16 @@ func mixGainsFor(p project.Project, pr venue.Preset) mixGains {
 	return mixGains{
 		direct: float32(dsp.DbToLin(p.Spatial.DirectLevelDb)),
 		reverb: float32(reverb),
-		crowd:  float32(dsp.DbToLin(p.Crowd.LevelDb)),
 	}
 }
 
-// mix は直接音・残響・客席を、それぞれのゲインで足す。
-func mix(g mixGains, direct, reverb, crowdSig [][]float32, reverbDelay int) [][]float32 {
+// mix は直接音・残響を、それぞれのゲインで足す。
+func mix(g mixGains, direct, reverb [][]float32, reverbDelay int) [][]float32 {
 	out := make([][]float32, 2)
 	for c := range out {
 		out[c] = make([]float32, len(direct[c]))
 		for i := range out[c] {
-			out[c][i] = direct[c][i]*g.direct + crowdSig[c][i]*g.crowd
+			out[c][i] = direct[c][i] * g.direct
 		}
 		// 残響は、リスナーに最初の音が届く時刻(reverbDelay)から始まる
 		for i, v := range reverb[c] {

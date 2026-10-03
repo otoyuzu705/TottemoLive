@@ -36,8 +36,6 @@ func testProject(src string) project.Project {
 	p := project.New()
 	p.Sources = []project.Source{{ID: "s", Path: src, Role: project.RoleMix}}
 	p.Venue = project.DefaultVenue()
-	p.Crowd.Keyframes = []project.Keyframe{{T: 0, Cheer: 0.8}, {T: 3, Cheer: 0.1}}
-	p.Crowd.ClapRanges = []project.ClapRange{{Start: 1, End: 3}}
 	return p
 }
 
@@ -128,8 +126,6 @@ func TestParametersAffectOutput(t *testing.T) {
 		"spatial.distance": func(p *project.Project) { p.Spatial.DistanceRolloff = 0 },
 		"reverb.mix":       func(p *project.Project) { p.Reverb.Mix = 0.9 },
 		"reverb.decay":     func(p *project.Project) { p.Reverb.DecayScale = 0.5 },
-		"crowd.levelDb":    func(p *project.Project) { p.Crowd.LevelDb = 6 },
-		"crowd.seed":       func(p *project.Project) { p.Crowd.Seed = 5 },
 		"listener":         func(p *project.Project) { p.Listener.X = 5 },
 	} {
 		q := base.Clone()

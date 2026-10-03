@@ -29,17 +29,16 @@ func TestFirstArrival(t *testing.T) {
 	}
 }
 
-// mix は残響を reverbDelay だけ遅らせて足し、直接音・客席はそのまま足す。
+// mix は残響を reverbDelay だけ遅らせて足し、直接音はそのまま足す。
 func TestMixDelaysReverb(t *testing.T) {
-	g := mixGains{direct: 1, reverb: 0.5, crowd: 1}
+	g := mixGains{direct: 1, reverb: 0.5}
 	n := 400
 	zero := func() [][]float32 { return [][]float32{make([]float32, n), make([]float32, n)} }
-	direct, reverb, crowd := zero(), zero(), zero()
+	direct, reverb := zero(), zero()
 	direct[0][10] = 1
 	reverb[0][0], reverb[1][5] = 1, 1
-	crowd[1][20] = 1
 	const delay = 100
-	out := mix(g, direct, reverb, crowd, delay)
+	out := mix(g, direct, reverb, delay)
 	if len(out[0]) != n {
 		t.Fatalf("length %d", len(out[0]))
 	}
@@ -52,12 +51,9 @@ func TestMixDelaysReverb(t *testing.T) {
 	if out[1][5+delay] != 0.5 || out[1][5] != 0 {
 		t.Errorf("reverb right: %v %v", out[1][5+delay], out[1][5])
 	}
-	if out[1][20] != 1 {
-		t.Errorf("crowd %v", out[1][20])
-	}
 	// 出力の終わりを越える残響は切り捨てる(範囲外に書かない)
 	reverb[0][n-1] = 1
-	mix(g, direct, reverb, crowd, delay)
+	mix(g, direct, reverb, delay)
 }
 
 // 残響のゲインは会場の物理的な値: 臨界距離にいるとき、メイン全部の直接音と同じ大きさ(D/R = 0 dB)。

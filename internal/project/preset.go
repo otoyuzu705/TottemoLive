@@ -12,30 +12,20 @@ import (
 	"unicode/utf8"
 )
 
-// SoundCrowd は音作りプリセットに含める客席の項目。タイムライン(キーフレーム・手拍子区間)は含めない。
-type SoundCrowd struct {
-	Density float64 `json:"density"`
-	LevelDb float64 `json:"levelDb"`
-	SpreadM float64 `json:"spreadM"`
-	Seed    int     `json:"seed"`
-}
-
 // SoundPreset は音作りプリセット。素材・座席・スピーカー位置・タイムラインを含まないので、
 // 別の曲にそのまま適用できる。
 type SoundPreset struct {
-	PA      PA         `json:"pa"`
-	Sub     Sub        `json:"sub"`
-	Spatial Spatial    `json:"spatial"`
-	Reverb  Reverb     `json:"reverb"`
-	Crowd   SoundCrowd `json:"crowd"`
-	Output  Output     `json:"output"`
+	PA      PA      `json:"pa"`
+	Sub     Sub     `json:"sub"`
+	Spatial Spatial `json:"spatial"`
+	Reverb  Reverb  `json:"reverb"`
+	Output  Output  `json:"output"`
 }
 
 // ExtractSoundPreset はプロジェクトから音作りプリセットの部分を取り出す。
 func ExtractSoundPreset(p Project) SoundPreset {
 	return SoundPreset{
 		PA: p.PA, Sub: p.Sub, Spatial: p.Spatial, Reverb: p.Reverb, Output: p.Output,
-		Crowd: SoundCrowd{Density: p.Crowd.Density, LevelDb: p.Crowd.LevelDb, SpreadM: p.Crowd.SpreadM, Seed: p.Crowd.Seed},
 	}
 }
 
@@ -43,7 +33,6 @@ func ExtractSoundPreset(p Project) SoundPreset {
 func (p Project) ApplySoundPreset(sp SoundPreset) Project {
 	p = p.Clone()
 	p.PA, p.Sub, p.Spatial, p.Reverb, p.Output = sp.PA, sp.Sub, sp.Spatial, sp.Reverb, sp.Output
-	p.Crowd.Density, p.Crowd.LevelDb, p.Crowd.SpreadM, p.Crowd.Seed = sp.Crowd.Density, sp.Crowd.LevelDb, sp.Crowd.SpreadM, sp.Crowd.Seed
 	p.Normalize()
 	return p
 }

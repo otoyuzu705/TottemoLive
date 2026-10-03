@@ -15,7 +15,7 @@ import (
 type ParamSpec struct {
 	Path     string   `json:"path"`    // Project内の位置。例 "pa.lowCutHz"
 	Label    string   `json:"label"`   // UIの表示名
-	Group    string   `json:"group"`   // pa / spatial / reverb / crowd / master
+	Group    string   `json:"group"`   // pa / sub / spatial / reverb / master
 	Kind     string   `json:"kind"`    // "float" / "int" / "enum"
 	Unit     string   `json:"unit"`    // "Hz" "dB" "ms" など
 	Min      float64  `json:"min"`     //
@@ -80,12 +80,6 @@ var specs = []ParamSpec{
 	f("reverb.lowDecayScale", "低域の残響の長さ", "reverb", "倍", 0.5, 2.5, 0.05, 1.3),
 	f("reverb.lowLevelDb", "低域の残響レベル", "reverb", "dB", -12, 12, 0.5, 3),
 	advanced(logScale(f("reverb.lowCrossoverHz", "低域の境界周波数", "reverb", "Hz", 80, 500, 5, 250))),
-
-	f("crowd.density", "客席の密度", "crowd", "", 0, 1, 0.01, 0.7),
-	f("crowd.levelDb", "客席レベル", "crowd", "dB", -30, 6, 0.5, -6),
-	f("crowd.spreadM", "散布半径", "crowd", "m", 2, 30, 0.5, 10),
-	{Path: "crowd.seed", Label: "配置の乱数シード", Group: "crowd", Kind: KindInt,
-		Min: 0, Max: 999999, Step: 1, Default: 1, Scale: "linear"},
 
 	f("output.targetLufs", "ラウドネス目標", "master", "LUFS", -24, -9, 0.5, -14),
 	f("output.ceilingDbTp", "ピーク上限", "master", "dBTP", -3, 0, 0.1, -1),
