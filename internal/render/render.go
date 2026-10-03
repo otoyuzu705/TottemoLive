@@ -18,6 +18,7 @@ import (
 	"math"
 	"sync"
 
+	"tottemolive/internal/analysis"
 	"tottemolive/internal/audio"
 	"tottemolive/internal/crowd"
 	"tottemolive/internal/dsp"
@@ -50,6 +51,16 @@ type Result struct {
 	Audio      [][]float32
 	SampleRate int
 	LUFS       float64 // 出力の統合ラウドネス
+	// PA は、PA出力(サブ分割の前のバス)の帯域レベルの時系列。プレビュー用のエンジンだけが作る(書き出しでは nil)。
+	PA *PASpectrum
+}
+
+// PASpectrum はスペクトラム表示で「PAから出た音」を耳に届く音に重ねるためのデータ。
+type PASpectrum struct {
+	Series *analysis.Series
+	// OffsetDb は、PA出力の全体の大きさを、耳に届く出力(マスター後)の全体の大きさにそろえるための値(dB)。
+	// 距離減衰・ミックス・ラウドネス調整による全体の音量の違いを除いて、音色(帯域ごとの差)だけを比べられる。
+	OffsetDb float64
 }
 
 // Render はプロジェクト全体をレンダリングする(キャッシュなし)。
@@ -108,7 +119,7 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 	srcs := e.sources(p.Sources, prog)
 
 	// 2. 処理
-	steps := newSteps(prog, StageProcess, len(srcs)+4)
+	steps := newSteps(prog, StageProcess, len(srcs)+5)
 	pa, err := e.paStage(ctx, p, srcs, steps)
 	if err != nil {
 		return nil, err
@@ -123,11 +134,19 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 	total := songLen + maxTailSamples(pp.pr)
 	outLen := songLen + len(ir[0])
 
-	// 3つの系統は互いに独立なので並列に回す
+	// 4つの系統は互いに独立なので並列に回す
 	var direct, reverb, crowdSig [][]float32
-	var derr, rerr, cerr error
+	var paSpec paSpectrumOut
+	var derr, rerr, cerr, aerr error
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		if e.analyzePA {
+			paSpec, aerr = e.paSpectrumStage(ctx, bus, pa.key)
+		}
+		steps.done()
+	}()
 	go func() {
 		defer wg.Done()
 		direct, derr = e.directStage(ctx, pp, bus, pa.key, total)
@@ -147,14 +166,18 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := errors.Join(derr, rerr, cerr); err != nil {
+	if err := errors.Join(derr, rerr, cerr, aerr); err != nil {
 		return nil, err
 	}
 
 	out := mix(p, crop(direct, outLen), crop(reverb, outLen), crop(crowdSig, outLen))
 	master(out, sampleRate, p.Output)
 	steps.done()
-	return &Result{Audio: out, SampleRate: sampleRate, LUFS: dsp.IntegratedLUFS(out, sampleRate)}, nil
+	res := &Result{Audio: out, SampleRate: sampleRate, LUFS: dsp.IntegratedLUFS(out, sampleRate)}
+	if paSpec.series != nil {
+		res.PA = &PASpectrum{Series: paSpec.series, OffsetDb: levelOffsetDb(paSpec.meanSquare, out, songLen)}
+	}
+	return res, nil
 }
 
 func crop(buf [][]float32, n int) [][]float32 {
@@ -172,6 +195,36 @@ func maxTailSamples(pr venue.Preset) int {
 	low, _ := params.Find("reverb.lowDecayScale")
 	sec := venue.IRSeconds(pr, project.Reverb{PreDelayMs: pre.Max, DecayScale: decay.Max, LowDecayScale: low.Max})
 	return int(math.Ceil(sec * sampleRate))
+}
+
+// paSpectrumOut はPA出力の帯域レベルの時系列と、PA出力(モノ)の2乗平均。
+type paSpectrumOut struct {
+	series     *analysis.Series
+	meanSquare float64
+}
+
+// paSpectrumStage はPA出力(サブ分割の前のバスの左右平均)の帯域レベルを、曲全体について求める。
+// 読むもの: PAの出力だけ(キーは PA 段のキーと同じ)。座席・会場・残響・ミックス・マスターには依らない。
+func (e *Engine) paSpectrumStage(ctx context.Context, bus *lazyBus, paKey string) (paSpectrumOut, error) {
+	return memo(e.cache, "paSpectrum", hashKey(paKey, "bands"), func() (paSpectrumOut, error) {
+		in := bus.get()
+		mono := analysis.Mono(in[0], in[1])
+		s, err := analysis.Compute(ctx, mono, sampleRate)
+		if err != nil {
+			return paSpectrumOut{}, err
+		}
+		return paSpectrumOut{series: s, meanSquare: analysis.MeanSquare(mono)}, nil
+	})
+}
+
+// levelOffsetDb は、PA出力の2乗平均 paMS を、マスター後の出力(曲の長さぶん、左右平均)の2乗平均にそろえる dB。
+func levelOffsetDb(paMS float64, out [][]float32, songLen int) float64 {
+	n := min(songLen, len(out[0]))
+	finalMS := analysis.MeanSquare(analysis.Mono(out[0][:n], out[1][:n]))
+	if paMS <= 0 || finalMS <= 0 {
+		return 0
+	}
+	return 10 * math.Log10(finalMS/paMS)
 }
 
 // stageOut は上流の段を表す。key はキャッシュキー、load は出力を作る(デコードなど)。
