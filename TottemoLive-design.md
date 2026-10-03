@@ -223,7 +223,7 @@ TottemoLive/
 | `ListSoundPresets() []SoundPresetInfo` | 音作りプリセット一覧(出荷時 + ユーザー保存) |
 | `ApplySoundPreset(p Project, name string) (Project, error)` | プリセットの値を反映したProjectを返す |
 | `SaveSoundPreset(name string, p Project) error` / `DeleteSoundPreset(name string) error` | ユーザープリセットの保存と削除 |
-| `RenderPreview(p Project) (PreviewResult, error)` | 曲全体を書き出しと同じ処理でレンダリングし、プレビューURL・PA出力の帯域レベルのURL・形(帯域数・フレーム数・間隔)・`offsetDb` を返す。段ごとのキャッシュを使う。新しい要求が来ると進行中のプレビューは中断され、中断された呼び出しは空文字とnilを返す(フロントは無視する) |
+| `RenderPreview(p Project) (PreviewResult, error)` | 曲全体を書き出しと同じ処理でレンダリングし、プレビューURL・PA出力の帯域レベルのURL・形(帯域数・フレーム数・間隔)・`offsetDb` を返す。段ごとのキャッシュを使う。新しい要求が来ると進行中のプレビューは中断され、中断された呼び出しは URL が空の結果とnilを返す(フロントは無視する) |
 | `RenderOriginal(p Project) (string, error)` | 曲全体の原音(ゲインを掛けて足しただけ)のURL。A/B比較用で、ラウドネスはマスターを通して目標にそろえる |
 | `StartExport(p Project, outPath string) (string, error)` | 書き出しジョブを開始し、ジョブIDを返す |
 | `CancelJob(jobID string)` | ジョブの中断(書き出し・ステム分離) |
