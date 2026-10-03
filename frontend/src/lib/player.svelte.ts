@@ -1,11 +1,16 @@
 // プレビュー再生。<audio> に加工後・原音(曲全体)の2本を切り替えて流す。
 // 新しいプレビューが届いたら、再生位置を保ったまま音源を差し替える。
+import { bandLevels } from './spectrum'
+
 export type Mode = 'processed' | 'original'
 
 /** 再生音量(dB)の範囲。0 dB を超えると出力が0 dBFSを超えて歪むことがある。 */
 export const VOLUME_MIN_DB = -30
 export const VOLUME_MAX_DB = 6
 const VOLUME_KEY = 'tottemolive.volumeDb'
+
+/** スペクトラム表示用のFFT長。48 kHz で bin幅 約2.9 Hz、窓の長さ 約0.34 秒(低域の帯域まで分解できる) */
+const ANALYSER_FFT_SIZE = 16384
 
 function loadVolume(): number {
   try {
@@ -34,6 +39,8 @@ class Player {
   private raf = 0
   private ctx?: AudioContext
   private gain?: GainNode
+  private analyser?: AnalyserNode
+  private freqBuf?: Float32Array<ArrayBuffer>
 
   constructor() {
     this.audio.addEventListener('play', () => {
@@ -55,13 +62,20 @@ class Player {
    * 音量用のWebAudioの経路(<audio> → GainNode → 出力)を作る。0 dB を超える増幅は
    * <audio>.volume (最大1)では出来ないため。ブラウザの規則で、ユーザー操作の中で作る必要がある。
    * 加工後・原音とも同じ <audio> を通るので、A/Bで同じ音量になる。
+   * 音量の後ろにスペクトラム表示用のアナライザーを挟む(耳に届く出力そのものを見るため)。
    */
   private ensureGraph() {
     if (this.gain) return
     this.ctx = new AudioContext()
     const source = this.ctx.createMediaElementSource(this.audio)
     this.gain = this.ctx.createGain()
-    source.connect(this.gain).connect(this.ctx.destination)
+    this.analyser = this.ctx.createAnalyser()
+    this.analyser.fftSize = ANALYSER_FFT_SIZE
+    this.analyser.smoothingTimeConstant = 0 // 表示側(Meter)で動きをつけるので、ここでは平滑化しない
+    this.analyser.minDecibels = -140
+    this.analyser.maxDecibels = 0
+    this.freqBuf = new Float32Array(this.analyser.frequencyBinCount)
+    source.connect(this.gain).connect(this.analyser).connect(this.ctx.destination)
     this.applyVolume(true)
   }
 
@@ -71,6 +85,17 @@ class Player {
     // 急に変えるとプツッというノイズが出るので、ごく短い時間で滑らかに変える
     if (immediate) this.gain.gain.value = g
     else this.gain.gain.setTargetAtTime(g, this.ctx.currentTime, 0.015)
+  }
+
+  /**
+   * いま出力されている音の、1/3オクターブ帯域ごとのレベル(dB、0 dBFS の正弦波 = 0 dB)を out に書く。
+   * まだ再生の経路が無い(一度も再生・音量操作をしていない)ときは false。
+   */
+  readBands(out: Float32Array): boolean {
+    if (!this.analyser || !this.ctx || !this.freqBuf) return false
+    this.analyser.getFloatFrequencyData(this.freqBuf)
+    bandLevels(this.freqBuf, this.ctx.sampleRate, this.analyser.fftSize, out)
+    return true
   }
 
   setVolume(db: number) {

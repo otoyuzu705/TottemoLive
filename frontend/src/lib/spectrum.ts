@@ -31,7 +31,7 @@ export function bandLevels(
   freqDb: Float32Array,
   sampleRate: number,
   fftSize: number,
-  out = new Float32Array(BAND_CENTERS.length),
+  out: Float32Array = new Float32Array(BAND_CENTERS.length),
 ): Float32Array {
   const binHz = sampleRate / fftSize
   BAND_CENTERS.forEach((fc, i) => {
