@@ -307,13 +307,14 @@ func TestLimiterGuardKeepsResult(t *testing.T) {
 	}
 	buf := [][]float32{x, append([]float32(nil), x...)}
 	ceil := DbToLin(-1)
-	with, without := computeNeed(buf, ceil, true), computeNeed(buf, ceil, false)
+	n := len(x)
+	with, without := computeNeedRange(buf, 0, n, 0, n, ceil, true), computeNeedRange(buf, 0, n, 0, n, ceil, false)
 	skippable := 0
 	for i := range with {
 		if with[i] != without[i] {
 			t.Fatalf("guard changed need[%d]: %v vs %v", i, with[i], without[i])
 		}
-		if without[i] == 1 && localMax(buf, i-guardSpan, i+guardSpan)*interpGain <= ceil {
+		if without[i] == 1 && localMaxAt(buf, 0, n, i-guardSpan, i+guardSpan)*interpGain <= ceil {
 			skippable++
 		}
 	}

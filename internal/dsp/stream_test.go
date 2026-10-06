@@ -290,3 +290,109 @@ func TestStreamConvolverCancel(t *testing.T) {
 		t.Error("expected cancellation error")
 	}
 }
+
+func limiterTestSignals(rng *rand.Rand) map[string][][]float32 {
+	const sr = 48000
+	mk := func(n int, amp float32) [][]float32 {
+		a, b := randSignal(rng, n), randSignal(rng, n)
+		for i := range a {
+			a[i] *= amp
+			b[i] *= amp * 0.8
+		}
+		return [][]float32{a, b}
+	}
+	out := map[string][][]float32{
+		"n0": {{}, {}},
+		"n1": {{1.5}, {-0.5}},
+		"n2": {{1.5, 0.2}, {-0.5, 1.2}},
+	}
+	for _, n := range []int{10, 50, 72, 73, 145, 168, 169, 300} {
+		out["short"+itoa(n)] = mk(n, 1.6)
+	}
+	out["quiet"] = mk(5000, 0.1)
+	out["noise"] = mk(6000, 1.3)
+	// 静かな区間・大きなサイン・ノイズ・端のピーク
+	n := 9000
+	x := make([]float32, n)
+	copy(x, sine(300, 0.1, n, sr))
+	copy(x[2000:], sine(11025, 1.4, 1500, sr))
+	copy(x[4000:], sine(1000, 0.9, 1500, sr))
+	for i := 6500; i < n; i++ {
+		x[i] = (rng.Float32()*2 - 1) * 0.3
+	}
+	x[0], x[n-1], x[n-2] = 1.9, -1.7, 1.2
+	out["mixed"] = [][]float32{x, append([]float32(nil), x...)}
+	return out
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	s := ""
+	for ; n > 0; n /= 10 {
+		s = string(rune('0'+n%10)) + s
+	}
+	return s
+}
+
+func TestLimiterStreamMatchesRef(t *testing.T) {
+	const sr = 48000
+	rng := rand.New(rand.NewSource(31))
+	for name, sig := range limiterTestSignals(rng) {
+		for _, ceilDb := range []float64{-1, -6} {
+			want := copyBuf(sig)
+			refTruePeakLimit(want, sr, ceilDb)
+			whole := copyBuf(sig)
+			TruePeakLimit(whole, sr, ceilDb)
+			for c := range want {
+				if i, ok := equalF32(whole[c], want[c]); !ok {
+					t.Fatalf("%s ceil=%v wrapper ch%d differs at %d", name, ceilDb, c, i)
+				}
+			}
+			n := len(sig[0])
+			for _, size := range []int{1, 50, 145, 1000, 0} {
+				l := NewLimiter(sr, 2, ceilDb)
+				got := [][]float32{nil, nil}
+				add := func(o [][]float32) {
+					for c := range got {
+						got[c] = append(got[c], o[c]...)
+					}
+				}
+				if n > 0 {
+					for _, r := range chunkRanges(n, size) {
+						add(l.Process([][]float32{sig[0][r[0]:r[1]], sig[1][r[0]:r[1]]}))
+					}
+				}
+				add(l.Flush())
+				for c := range want {
+					if i, ok := equalF32(got[c], want[c]); !ok {
+						t.Fatalf("%s ceil=%v chunk=%d ch%d differs at %d (len %d vs %d)", name, ceilDb, size, c, i, len(got[c]), len(want[c]))
+					}
+				}
+			}
+		}
+	}
+}
+
+// 出力は 2*look+guardSpan サンプル遅れる: それより前には出てこない。
+func TestLimiterLatency(t *testing.T) {
+	l := NewLimiter(48000, 2, -1)
+	look := l.look
+	fed, got := 0, 0
+	for i := 0; i < 20; i++ {
+		o := l.Process([][]float32{make([]float32, 100), make([]float32, 100)})
+		fed += 100
+		got += len(o[0])
+		if got > max(fed-(2*look+guardSpan), 0) {
+			t.Fatalf("emitted %d of %d fed (latency %d)", got, fed, 2*look+guardSpan)
+		}
+	}
+	if got != fed-(2*look+guardSpan) {
+		t.Errorf("steady-state latency: emitted %d of %d, want latency %d", got, fed, 2*look+guardSpan)
+	}
+	got += len(l.Flush()[0])
+	if got != fed {
+		t.Errorf("after Flush emitted %d of %d", got, fed)
+	}
+}
