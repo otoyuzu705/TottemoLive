@@ -14,6 +14,7 @@ import (
 
 	"tottemolive/internal/audio"
 	"tottemolive/internal/project"
+	"tottemolive/internal/settings"
 )
 
 type events struct {
@@ -341,8 +342,13 @@ func TestMigrateDir(t *testing.T) {
 // アプリの終了時に、プレビューの一時ファイル(段のキャッシュ・配信中のWAV)が消える。
 func TestShutdownRemovesTempFiles(t *testing.T) {
 	a, _, p := newTestApp(t)
+	// 他のパッケージのテストと一時フォルダを共有しないよう、置き場所を専用のフォルダにする
+	tmp := t.TempDir()
+	if err := a.SetSettings(settings.Settings{CacheEnabled: true, CacheDir: tmp}); err != nil {
+		t.Fatal(err)
+	}
 	list := func() map[string]bool {
-		dirs, _ := filepath.Glob(filepath.Join(os.TempDir(), "tottemolive-*-*"))
+		dirs, _ := filepath.Glob(filepath.Join(tmp, "tottemolive-*-*"))
 		m := map[string]bool{}
 		for _, d := range dirs {
 			m[d] = true

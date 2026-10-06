@@ -18,7 +18,7 @@ import (
 // (漏れると、値を変えても音が変わらないバグになる)。
 // 段(スロット)ごとに最新の1件だけを持つので、メモリは曲の長さに比例した一定量で収まる。
 type Engine struct {
-	cache *cache // nil ならキャッシュなし(書き出し)
+	cache *cache // nil ならキャッシュなし(書き出し、または設定でキャッシュを切ったプレビュー)
 	// analyzePA が true のとき、結果にPA出力の帯域レベル(スペクトラム表示用)を含める。プレビュー用だけ。
 	analyzePA bool
 	decodes   atomic.Int64 // デコードした回数(テスト用)

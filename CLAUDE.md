@@ -8,6 +8,8 @@ M1(エンジンとCLI)とM2(Wails骨格・音作りパネル・曲全体のプ�
 
 作るもの: 楽曲音源を「指定した会場・座席で聴いているような」バイノーラル音源に変換して書き出すデスクトップアプリ(アプリ名は `TottemoLive`、Goモジュール名は `tottemolive`)。Go + Wails v2、フロントは Svelte + TypeScript。
 
+アプリの設定(ディスクキャッシュの使用・置き場所)は `os.UserConfigDir()/TottemoLive/settings.json`。設定ダイアログ(ヘッダーの「設定…」)と `App` の `GetSettings` / `SetSettings` / `GetCacheInfo` / `ClearCache` / `PickCacheDir`、CLIの環境変数 `TOTTEMOLIVE_CACHE_DIR` / `TOTTEMOLIVE_CACHE=off` から使う。
+
 M1時点の暫定: 実測のHRIR・会場IRは再配布条件が未確認で同梱していないため、いずれも合成で代用している(HRIRは球形頭部モデル `spatial/synthetic.go`、会場IRは残響時間からの合成 `venue.BuildIR`)。実素材を同梱するときは `assets/` に置き、`spatial.LoadSet` などを差し替える。
 
 ## コマンド
@@ -65,7 +67,7 @@ M1 エンジンとCLI(済) → M2 Wails骨格と音作りパネル・プレビ�
 
 - プレビューは書き出しと同じ処理を曲全体に対して行う。品質を落とした軽量版の経路を作らない(プレビューで決めた音が書き出しで変わるため)
 - 例外は先行プレビュー(`Engine.PreviewWindow`、`internal/render/window.go`)。曲全体の処理が終わるまでの間に聴けるよう、再生位置の周辺の約30秒を同じ処理で先に作る。直接音・残響は `directCompute` / `reverbCompute` を窓に対して呼ぶだけで、計算は曲全体と同じ(窓の結果が曲全体の同じ範囲と一致することをテストしている)。違うのはラウドネス調整のゲインを推定する点だけ。直接音・残響の計算を変えるときは、窓も同じ関数を通ることを崩さない。窓の結果は段のキャッシュに入れない(PA段だけは曲全体を処理して共有する)
-- `internal/render` はプレビューの各段の出力をキャッシュする(スロットは inputLevel / pa / paSpectrum / direct / reverb。pa・direct・reverb は一時ファイルのスプール、他はメモリ)。各段のキャッシュキーは「その段が読むパラメーターの値 + 上流の段のキー」(`render.go` の `*KeyFor`)。段が読むパラメーターを増やしたらキーにも含めること(漏れると値を変えても音が変わらないバグになる)
+- `internal/render` はプレビューの各段の出力をキャッシュする(スロットは inputLevel / pa / paSpectrum / direct / reverb。pa・direct・reverb は一時ファイルのスプール、他はメモリ)。ディスクキャッシュを使うか・置き場所はアプリの設定(`internal/settings`、`cacheEnabled` / `cacheDir`。音作りパラメーターではないので `ParamSpec` には入れない)で決まり、`render.EngineConfig` で渡す。無効のときは段もメモリのmemoも保持せず毎回全段を計算し直す(使い捨てスプールは作って、終われば消す)。一時ファイルの置き場所に `os.TempDir()` を直書きしない(Engine・使い捨てスプール・`Store`・`CleanStaleTempIn` は設定の置き場所を使う。置き場所のフォルダ自体は消さず、その下の `tottemolive-*` だけ消す)。設定変更の反映(実行中のプレビュー系ジョブの中断、書き出しは中断しない)は設計書の「アプリの設定」節各段のキャッシュキーは「その段が読むパラメーターの値 + 上流の段のキー」(`render.go` の `*KeyFor`)。段が読むパラメーターを増やしたらキーにも含めること(漏れると値を変えても音が変わらないバグになる)
 - 各段の出力は自然な長さ(直接音 = 曲 + 遅延 + HRIRの尾、残響 = 曲 + IRの長さ)で持ち、ミックスで曲の出力の長さに合わせる(足りない所は無音、超える所は捨てる)。IRの長さをキャッシュキーに入れない(残響を動かしても直接音は再計算しない)
 - ラウドネスも曲全体で測るので、プレビューと書き出しは同じ音量になる
 - 内部表現はfloat32のチャンネル別バッファ。畳み込みの分割単位は最小1024(下記)
