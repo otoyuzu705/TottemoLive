@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"runtime"
 	"sync"
 
 	"tottemolive/internal/audio"
@@ -40,18 +41,41 @@ func newPAProc(sr int, gainDb float64, pa project.PA) *paProc {
 	return p
 }
 
+// paParallelMinFrames は、paProc.Process がチャンネルを並列に処理し始めるフレーム数(これ未満は直列)。
+const paParallelMinFrames = 4096
+
 // Process は buf(ステレオ)にその場でゲインとPA質感(低域カット → 低域シェルフ → 高域シェルフ → コンプ → 歪み)を掛ける。
+// ゲインとフィルタはチャンネルごとに独立(状態もチャンネルごと)なので、チャンネルを並列に処理する。
+// コンプ以降は、中でサンプル方向に並列化している(dsp.Compressor / dsp.Saturate)。結果は並列でも直列でも同じ。
 func (p *paProc) Process(buf [][]float32) {
-	for c, ch := range buf {
-		for i := range ch {
-			ch[i] *= p.g
+	if len(buf) > 1 && len(buf[0]) >= paParallelMinFrames && runtime.GOMAXPROCS(0) > 1 {
+		var wg sync.WaitGroup
+		for c := 1; c < len(buf); c++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				p.filter(c, buf[c])
+			}()
 		}
-		for _, f := range p.f[c] {
-			f.Process(ch)
+		p.filter(0, buf[0])
+		wg.Wait()
+	} else {
+		for c, ch := range buf {
+			p.filter(c, ch)
 		}
 	}
 	p.comp.Process(buf)
 	dsp.Saturate(buf, p.drive)
+}
+
+// filter はチャンネル c にゲインと低域カット・シェルフを掛ける(自分のチャンネルの状態だけを触る)。
+func (p *paProc) filter(c int, ch []float32) {
+	for i := range ch {
+		ch[i] *= p.g
+	}
+	for _, f := range p.f[c] {
+		f.Process(ch)
+	}
 }
 
 // applyPA は音源にゲインを掛けてPA質感(低域カット → 低域シェルフ → 高域シェルフ → コンプ → 歪み)を付ける。

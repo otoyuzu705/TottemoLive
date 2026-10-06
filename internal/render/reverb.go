@@ -2,6 +2,7 @@ package render
 
 import (
 	"context"
+	"runtime"
 	"sync"
 
 	"tottemolive/internal/dsp"
@@ -20,8 +21,11 @@ type radiatedProc struct {
 	lp     *dsp.LR4
 	g      float32
 	mono   []float32
-	tmp    []float32
+	tmp    [3][]float32 // 左の高域・右の高域・合計の低域(別々の配列で並列に計算する)
 }
+
+// radiatedParallelMinFrames は、radiatedProc.Process が3本のフィルタを並列に処理し始めるフレーム数。
+const radiatedParallelMinFrames = 4096
 
 func newRadiatedProc(active bool, sub project.Sub) *radiatedProc {
 	r := &radiatedProc{active: active}
@@ -35,33 +39,50 @@ func newRadiatedProc(active bool, sub project.Sub) *radiatedProc {
 }
 
 // Process はバスの続きから、放射された音のモノラル表現を返す(戻り値は次の呼び出しまで有効)。
+//
+// サブ有効時の LR4 3本(左の高域・右の高域・左右の合計の低域)は、別々の配列で計算するので並列に回す
+// (3本は互いに独立)。足し算は、元と同じ 左/2 → 右/2 → 低域×g の順に固定する。
 func (r *radiatedProc) Process(bus [][]float32) []float32 {
 	n := len(bus[0])
 	if cap(r.mono) < n {
 		r.mono = make([]float32, n)
-		r.tmp = make([]float32, n)
+		for k := range r.tmp {
+			r.tmp[k] = make([]float32, n)
+		}
 	}
-	mono, tmp := r.mono[:n], r.tmp[:n]
+	mono := r.mono[:n]
 	if !r.active {
 		for i := range mono {
 			mono[i] = (bus[0][i] + bus[1][i]) / 2
 		}
 		return mono
 	}
-	clear(mono)
-	for c := 0; c < 2; c++ {
-		copy(tmp, bus[c])
-		r.hp[c].Process(tmp)
-		for i, v := range tmp {
-			mono[i] += v / 2
+	t0, t1, t2 := r.tmp[0][:n], r.tmp[1][:n], r.tmp[2][:n]
+	hpL := func() { copy(t0, bus[0]); r.hp[0].Process(t0) }
+	hpR := func() { copy(t1, bus[1]); r.hp[1].Process(t1) }
+	lpSum := func() {
+		for i := range t2 {
+			t2[i] = bus[0][i] + bus[1][i]
 		}
+		r.lp.Process(t2)
 	}
-	for i := range tmp {
-		tmp[i] = bus[0][i] + bus[1][i]
+	if n >= radiatedParallelMinFrames && runtime.GOMAXPROCS(0) > 1 {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); hpR() }()
+		go func() { defer wg.Done(); lpSum() }()
+		hpL()
+		wg.Wait()
+	} else {
+		hpL()
+		hpR()
+		lpSum()
 	}
-	r.lp.Process(tmp)
-	for i, v := range tmp {
-		mono[i] += v * r.g
+	clear(mono)
+	for i := range mono {
+		mono[i] += t0[i] / 2
+		mono[i] += t1[i] / 2
+		mono[i] += t2[i] * r.g
 	}
 	return mono
 }
