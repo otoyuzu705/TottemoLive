@@ -163,7 +163,7 @@ func TestSpoolLifetime(t *testing.T) {
 }
 
 func TestEngineCloseRemovesDir(t *testing.T) {
-	e := NewEngine()
+	e := newTestEngine(t)
 	if err := e.Close(); err != nil { // 何も作っていなくても閉じられる
 		t.Fatal(err)
 	}

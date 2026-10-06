@@ -62,6 +62,7 @@ func newTestApp(t *testing.T) (*App, *events, project.Project) {
 		t.Fatalf("ffmpeg: %v %s", err, out)
 	}
 	a := NewApp()
+	t.Cleanup(func() { a.shutdown(context.Background()) })
 	a.ctx = context.Background()
 	a.presets.UserDir = t.TempDir()
 	ev := &events{}
@@ -116,6 +117,18 @@ func TestRenderPreviewServesWav(t *testing.T) {
 	}
 	if code, body := get(r.URL); code != 200 || len(body) < 44+2*2*48000*3 || string(body[:4]) != "RIFF" {
 		t.Errorf("wav: status=%d len=%d", code, len(body))
+	}
+	// Rangeリクエスト(シーク用)に部分的に答える
+	req, _ := http.NewRequest("GET", srv.URL+r.URL, nil)
+	req.Header.Set("Range", "bytes=44-107")
+	if res, err := http.DefaultClient.Do(req); err != nil {
+		t.Fatal(err)
+	} else {
+		part, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if res.StatusCode != http.StatusPartialContent || len(part) != 64 {
+			t.Errorf("range: status=%d len=%d", res.StatusCode, len(part))
+		}
 	}
 
 	// PA出力の帯域レベル: 件数・フレーム数・バイト数が結果の項目と一致する
@@ -323,4 +336,40 @@ func TestMigrateDir(t *testing.T) {
 	}
 	// どちらも無くてもエラーにならない
 	migrateDir(filepath.Join(root, "none"), filepath.Join(root, "none2"))
+}
+
+// アプリの終了時に、プレビューの一時ファイル(段のキャッシュ・配信中のWAV)が消える。
+func TestShutdownRemovesTempFiles(t *testing.T) {
+	a, _, p := newTestApp(t)
+	list := func() map[string]bool {
+		dirs, _ := filepath.Glob(filepath.Join(os.TempDir(), "tottemolive-*-*"))
+		m := map[string]bool{}
+		for _, d := range dirs {
+			m[d] = true
+		}
+		return m
+	}
+	before := list()
+	r, err := a.RenderPreview(p)
+	if err != nil || r.URL == "" {
+		t.Fatalf("preview: %+v %v", r, err)
+	}
+	if _, err := a.RenderOriginal(p); err != nil {
+		t.Fatal(err)
+	}
+	var mine []string
+	for d := range list() {
+		if !before[d] {
+			mine = append(mine, d)
+		}
+	}
+	if len(mine) == 0 {
+		t.Fatal("no temp dirs while previews are alive")
+	}
+	a.shutdown(context.Background())
+	for _, d := range mine {
+		if _, err := os.Stat(d); err == nil {
+			t.Errorf("%s remains after shutdown", d)
+		}
+	}
 }

@@ -52,7 +52,7 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			e := NewEngine()
+			e := newTestEngine(t)
 			if _, err := e.Preview(context.Background(), base, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -81,7 +81,7 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 func TestPreviewCacheHitOnRepeat(t *testing.T) {
 	p := testProject(makeSource(t, t.TempDir()))
 	p.Venue.Preset = "livehouse"
-	e := NewEngine()
+	e := newTestEngine(t)
 	a, _ := e.Preview(context.Background(), p, nil)
 	before := computed(e)
 	b, _ := e.Preview(context.Background(), p, nil)
@@ -105,7 +105,7 @@ func TestPreviewMatchesRender(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prev, err := NewEngine().Preview(context.Background(), p, nil)
+	prev, err := newTestEngine(t).Preview(context.Background(), p, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestPreviewMatchesRender(t *testing.T) {
 func TestOriginal(t *testing.T) {
 	p := testProject(makeSource(t, t.TempDir()))
 	p.Sources[0].GainDb = -6
-	r, err := NewEngine().Original(context.Background(), p)
+	r, err := newTestEngine(t).Original(context.Background(), p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestOriginal(t *testing.T) {
 func TestDecodeOnlyWhenNeeded(t *testing.T) {
 	p := testProject(makeSource(t, t.TempDir()))
 	p.Venue.Preset = "livehouse"
-	e := NewEngine()
+	e := newTestEngine(t)
 	preview := func(q project.Project) {
 		if _, err := e.Preview(context.Background(), q, nil); err != nil {
 			t.Fatal(err)

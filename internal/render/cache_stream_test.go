@@ -11,8 +11,8 @@ import (
 )
 
 // synthEngine は、合成音源を使うキャッシュ付きエンジン(プレビュー用)。
-func synthEngine(chunk int) *Engine {
-	e := NewEngine()
+func synthEngine(t *testing.T, chunk int) *Engine {
+	e := newTestEngine(t)
 	e.openSource = synthOpener
 	e.chunk = chunk
 	return e
@@ -39,7 +39,7 @@ func sameAudio(t *testing.T, name string, a, b *Result) {
 func TestCachedStagesMatchFreshRender(t *testing.T) {
 	ctx := context.Background()
 	base := synthTwoProject()
-	e := synthEngine(0)
+	e := synthEngine(t, 0)
 	defer e.Close()
 	if _, err := e.Preview(ctx, base, nil); err != nil {
 		t.Fatal(err)
@@ -71,7 +71,7 @@ func TestCachedStagesMatchFreshRender(t *testing.T) {
 			t.Fatalf("%s: no PA spectrum", tc.name)
 		}
 		// PA出力の帯域レベルも、一から計算した結果と同じ
-		fresh, err := synthEngine(0).Preview(ctx, q, nil)
+		fresh, err := synthEngine(t, 0).Preview(ctx, q, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -92,7 +92,7 @@ func TestPreviewChunkInvariance(t *testing.T) {
 	p := synthTwoProject()
 	var ref *Result
 	for _, chunk := range []int{997, 4096, 65536, 1 << 20} {
-		e := synthEngine(chunk)
+		e := synthEngine(t, chunk)
 		got, err := e.Preview(ctx, p, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -139,7 +139,7 @@ func spoolFiles(t *testing.T, e *Engine) int {
 func TestSpoolsAreReplacedAndRemoved(t *testing.T) {
 	ctx := context.Background()
 	base := synthTwoProject()
-	e := synthEngine(0)
+	e := synthEngine(t, 0)
 	if _, err := e.Preview(ctx, base, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestSpoolsAreReplacedAndRemoved(t *testing.T) {
 // 中断されたら、書きかけのスプールは残らない。計算済みの段は残る。
 func TestCancelLeavesNoPartialSpools(t *testing.T) {
 	base := synthTwoProject()
-	e := synthEngine(997)
+	e := synthEngine(t, 997)
 	defer e.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	var once sync.Once
@@ -214,7 +214,7 @@ func TestCancelLeavesNoPartialSpools(t *testing.T) {
 func TestSpectrumOnlyMiss(t *testing.T) {
 	ctx := context.Background()
 	p := synthTwoProject()
-	e := synthEngine(0)
+	e := synthEngine(t, 0)
 	defer e.Close()
 	e.analyzePA = false
 	first, err := e.Preview(ctx, p, nil)

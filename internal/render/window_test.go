@@ -12,11 +12,11 @@ import (
 func TestPreviewWindowMatchesFull(t *testing.T) {
 	dir := t.TempDir()
 	p := testProject(makeSource(t, dir))
-	full, err := NewEngine().Preview(context.Background(), p, nil)
+	full, err := newTestEngine(t).Preview(context.Background(), p, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := NewEngine()
+	e := newTestEngine(t)
 	for _, start := range []float64{0, 1.5, 3.2, 5, 100} { // 100 は曲の外(終わり近くに寄せられる)
 		w, err := e.previewWindow(context.Background(), p, start, 2)
 		if err != nil {
@@ -74,7 +74,7 @@ func TestPreviewWindowMatchesFull(t *testing.T) {
 func TestPreviewWindowSharesPAStage(t *testing.T) {
 	dir := t.TempDir()
 	p := testProject(makeSource(t, dir))
-	e := NewEngine()
+	e := newTestEngine(t)
 	if _, err := e.PreviewWindow(context.Background(), p, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -103,11 +103,11 @@ func TestPreviewWindowLoudnessOnLongSong(t *testing.T) {
 		t.Fatalf("ffmpeg: %v %s", err, out)
 	}
 	p.Sources[0].Path = long
-	full, err := NewEngine().Preview(context.Background(), p, nil)
+	full, err := newTestEngine(t).Preview(context.Background(), p, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := NewEngine()
+	e := newTestEngine(t)
 	for _, start := range []float64{0, 8, 18, 30} {
 		w, err := e.previewWindow(context.Background(), p, start, 6)
 		if err != nil {

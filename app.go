@@ -84,6 +84,14 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.emit = func(event string, data any) { runtime.EventsEmit(ctx, event, data) }
+	// 異常終了などで残った古い一時ファイル(プレビュー・レンダリングの途中のもの)を掃除する
+	go render.CleanStaleTemp(24 * time.Hour)
+}
+
+// shutdown はアプリの終了時に、プレビューの一時ファイル(段のキャッシュ・配信中のWAV)を消す。
+func (a *App) shutdown(ctx context.Context) {
+	a.engine.Close()
+	a.store.Close()
 }
 
 // --- イベントの中身(フロントは render:progress / render:done / render:error を購読する) ---
@@ -323,18 +331,27 @@ type PreviewResult struct {
 func (a *App) RenderPreview(p project.Project) (PreviewResult, error) {
 	_, ctx, done := a.jobs.Begin(a.ctx, "preview")
 	defer done()
-	res, err := a.engine.Preview(ctx, p, nil)
+	// WAVは、曲全体をメモリに持たず、できた分から一時ファイルへ書く
+	w := a.store.NewWAV()
+	res, err := a.engine.PreviewTo(ctx, p, nil, w)
 	if err != nil {
+		w.Abort()
 		if ctx.Err() != nil {
 			return PreviewResult{}, nil
 		}
 		return PreviewResult{}, err
 	}
-	wav := audio.WAV16(res.Audio, res.SampleRate)
-	if res.PA == nil {
-		return PreviewResult{URL: a.store.Put(wav)}, nil
+	var bands []byte
+	if res.PA != nil {
+		bands = res.PA.Series.Bytes()
 	}
-	url, bandsURL := a.store.PutWithBands(wav, res.PA.Series.Bytes())
+	url, bandsURL, err := a.store.Commit(w, bands)
+	if err != nil {
+		return PreviewResult{}, err
+	}
+	if res.PA == nil {
+		return PreviewResult{URL: url}, nil
+	}
 	return PreviewResult{
 		URL: url, BandsURL: bandsURL,
 		Bands: res.PA.Series.Bands, Frames: res.PA.Series.Frames, HopSec: res.PA.Series.HopSec, OffsetDb: res.PA.OffsetDb,
@@ -367,25 +384,27 @@ func (a *App) RenderPreviewWindow(p project.Project, startSec float64, supersede
 		}
 		return WindowResult{}, err
 	}
-	return WindowResult{URL: a.store.Put(audio.WAV16(w.Audio, w.SampleRate)), StartSec: w.StartSec, TotalSec: w.TotalSec}, nil
+	url := a.store.Put(audio.WAV16(w.Audio, w.SampleRate))
+	if url == "" {
+		return WindowResult{}, errors.New("プレビューの一時ファイルを書けません")
+	}
+	return WindowResult{URL: url, StartSec: w.StartSec, TotalSec: w.TotalSec}, nil
 }
 
 // RenderOriginal は曲全体の原音(A/B比較用)のURLを返す。ラウドネスはプレビューと同じ目標にそろえる。
 func (a *App) RenderOriginal(p project.Project) (string, error) {
 	_, ctx, done := a.jobs.Begin(a.ctx, "original")
 	defer done()
-	res, err := a.engine.Original(ctx, p)
-	return a.previewURL(ctx, res, err)
-}
-
-func (a *App) previewURL(ctx context.Context, res *render.Result, err error) (string, error) {
-	if err != nil {
+	w := a.store.NewWAV()
+	if _, err := a.engine.OriginalTo(ctx, p, w); err != nil {
+		w.Abort()
 		if ctx.Err() != nil {
 			return "", nil
 		}
 		return "", err
 	}
-	return a.store.Put(audio.WAV16(res.Audio, res.SampleRate)), nil
+	url, _, err := a.store.Commit(w, nil)
+	return url, err
 }
 
 // StartExport は書き出しジョブを開始してジョブIDを返す。

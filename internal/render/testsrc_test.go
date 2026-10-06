@@ -106,3 +106,11 @@ type discardSink struct{ frames int }
 
 func (d *discardSink) Start(frames, sampleRate int) error { return nil }
 func (d *discardSink) Write(buf [][]float32) error        { d.frames += len(buf[0]); return nil }
+
+// newTestEngine はキャッシュ付きのエンジンを返す。テストの終わりに Close して、一時ファイルを残さない。
+func newTestEngine(t testing.TB) *Engine {
+	t.Helper()
+	e := NewEngine()
+	t.Cleanup(func() { e.Close() })
+	return e
+}

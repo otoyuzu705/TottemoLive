@@ -87,7 +87,7 @@ func TestMemoryPeakBaseline(t *testing.T) {
 		t.Logf("Render  %2d min: HeapInuse peak %.0f MB", minutes, mb(peak))
 
 		peak = peakHeap(func() {
-			if _, err := NewEngine().Preview(context.Background(), p, nil); err != nil {
+			if _, err := newTestEngine(t).Preview(context.Background(), p, nil); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -117,7 +117,7 @@ func TestMemoryStaysFlat(t *testing.T) {
 		measure := func(sec int) uint64 {
 			e := &Engine{openSource: synthOpener}
 			if mode == "PreviewTo" {
-				e = NewEngine()
+				e = newTestEngine(t)
 				e.openSource = synthOpener
 				defer e.Close()
 			}

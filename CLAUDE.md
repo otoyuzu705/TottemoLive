@@ -78,7 +78,7 @@ M1 エンジンとCLI(済) → M2 Wails骨格と音作りパネル・プレビ�
 
 **Wails連携**
 
-- 生PCMや大きな配列をバインディングの戻り値で返さない(JSONが巨大になる)。プレビューはGo側でWAVをメモリに保持し、AssetServerの `Handler` で `/preview/{id}.wav` として配信、フロントは `<audio>` で再生する。シークのためRangeリクエスト対応が必須
+- 生PCMや大きな配列をバインディングの戻り値で返さない(JSONが巨大になる)。プレビューはGo側でWAVを一時ファイルへ少しずつ書いて(`render.PreviewWAV`)保持し、AssetServerの `Handler` で `/preview/{id}.wav` として配信、フロントは `<audio>` で再生する。シークのためRangeリクエスト対応が必須(`http.ServeContent`)。配信中のファイルは、保持の対象から外れても配信が終わるまで消さない。アプリ終了時(`OnShutdown` → `App.shutdown`)に一時ファイルを全部消す。Wails v2 のWindows版はハンドラの応答を全部メモリに貯めるので、WAVを1回のGETで取ると一時的にWAVの1〜2倍のメモリを使う(フロントのRange分割取得は未実装)
 - 波形はmin/maxピーク列だけを返し、描画はフロントのcanvas
 - 進捗は `runtime.EventsEmit` で通知: `render:progress`(`{jobId, stage, ratio}`、stageは decode / process / encode)、`render:done`、`render:error`
 - TS側の型は手書きせず、Wailsのバインディング生成に任せる(Goの構造体が正)。`frontend/wailsjs` は生成物だがコミットする。Goの公開メソッドや構造体を変えたら `wails generate module`(`wails dev`/`wails build` でも自動)で再生成すること
