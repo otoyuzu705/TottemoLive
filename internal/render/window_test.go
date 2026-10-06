@@ -82,8 +82,8 @@ func TestPreviewWindowSharesPAStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := e.Stats()
-	if st["pa:0"].Computed != 1 || st["pa:0"].Hits < 1 {
-		t.Errorf("pa stage: %+v", st["pa:0"])
+	if st["pa"].Computed != 1 || st["pa"].Hits < 1 {
+		t.Errorf("pa stage: %+v", st["pa"])
 	}
 	if got := e.decodes.Load(); got != 2 { // レベル合わせの測定 + PA段
 		t.Errorf("decoded %d times, want 2", got)

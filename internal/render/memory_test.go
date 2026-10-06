@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"tottemolive/internal/audio"
-	"tottemolive/internal/project"
 )
 
 // 長い曲のメモリ測定。時間がかかるので TOTTEMOLIVE_LONG_TESTS=1 のときだけ動く。
@@ -69,8 +68,9 @@ func makeLongSource(t testing.TB, minutes int) string {
 	return path
 }
 
-// TestMemoryPeakBaseline は、曲の長さに対するヒープのピークを測る(書き出し経路 Render とプレビュー経路 Preview)。
-// 判定はせず、数字を記録する。長い曲でも一定に収まることを確かめる判定は TestMemoryStaysFlat。
+// TestMemoryPeakBaseline は、ffmpeg で作った実ファイルの曲(2分・10分)に対するヒープのピークを測る(書き出し経路 Render と
+// プレビュー経路 Preview)。判定はせず、数字を記録する。Render / Preview は出力の音声をメモリに集めるので(memSink)、
+// 出力ぶん(10分で約230MB)は含まれる。出力をファイルへ流す場合は TestMemoryStaysFlat のとおりほぼ一定になる。
 func TestMemoryPeakBaseline(t *testing.T) {
 	requireLongTests(t)
 	for _, minutes := range []int{2, 10} {
@@ -107,34 +107,40 @@ func BenchmarkRender10Min(b *testing.B) {
 	}
 }
 
-var _ = project.New
-
 // TestMemoryStaysFlat は、曲が長くなってもヒープのピークが増えないことを確かめる(合成音源。ffmpeg もディスクの音源も使わない)。
-// 2分と20分の曲を RenderTo(出力は捨てる)で処理して、ピークの差と上限を判定する。
+// 2分と20分の曲を、書き出し(RenderTo、キャッシュなし)とプレビュー(PreviewTo、キャッシュ・帯域レベルあり)で処理して、
+// ピークの差と上限を判定する。
 func TestMemoryStaysFlat(t *testing.T) {
 	requireLongTests(t)
 	mb := func(b uint64) float64 { return float64(b) / (1 << 20) }
-	measure := func(sec int) uint64 {
-		e := &Engine{openSource: synthOpener}
-		sink := &discardSink{}
-		var res *Result
-		peak := peakHeap(func() {
-			var err error
-			if res, err = e.RenderTo(context.Background(), synthProject(sec), nil, sink); err != nil {
-				t.Fatal(err)
+	for _, mode := range []string{"RenderTo", "PreviewTo"} {
+		measure := func(sec int) uint64 {
+			e := &Engine{openSource: synthOpener}
+			if mode == "PreviewTo" {
+				e = NewEngine()
+				e.openSource = synthOpener
+				defer e.Close()
 			}
-		})
-		if sink.frames != res.Frames || sink.frames < sec*sampleRate {
-			t.Fatalf("%d s: sink got %d frames, result %d", sec, sink.frames, res.Frames)
+			sink := &discardSink{}
+			var res *Result
+			peak := peakHeap(func() {
+				var err error
+				if res, err = e.RenderTo(context.Background(), synthProject(sec), nil, sink); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if sink.frames != res.Frames || sink.frames < sec*sampleRate {
+				t.Fatalf("%d s: sink got %d frames, result %d", sec, sink.frames, res.Frames)
+			}
+			t.Logf("%-9s %2d min: HeapInuse peak %.0f MB", mode, sec/60, mb(peak))
+			return peak
 		}
-		t.Logf("RenderTo %2d min: HeapInuse peak %.0f MB", sec/60, mb(peak))
-		return peak
-	}
-	short, long := measure(2*60), measure(20*60)
-	if long > short && long-short >= 32<<20 {
-		t.Errorf("peak grew with the song length: %.0f MB -> %.0f MB", mb(short), mb(long))
-	}
-	if long >= 300<<20 {
-		t.Errorf("peak %.0f MB is too large", mb(long))
+		short, long := measure(2*60), measure(20*60)
+		if long > short && long-short >= 32<<20 {
+			t.Errorf("%s: peak grew with the song length: %.0f MB -> %.0f MB", mode, mb(short), mb(long))
+		}
+		if long >= 300<<20 {
+			t.Errorf("%s: peak %.0f MB is too large", mode, mb(long))
+		}
 	}
 }

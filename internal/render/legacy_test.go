@@ -93,47 +93,6 @@ func legacyRender(ctx context.Context, p project.Project) ([][]float32, float64,
 	return out, dsp.IntegratedLUFS(out, sampleRate), nil
 }
 
-// legacyPABus は、現行のPA段(音源ごとのPA → 合計)までの結果(バス)を返す。
-func legacyPABus(ctx context.Context, p project.Project) ([][]float32, error) {
-	pp, err := prepare(p)
-	if err != nil {
-		return nil, err
-	}
-	p = pp.p
-	bufs := make([][][]float32, len(p.Sources))
-	for i, s := range p.Sources {
-		bufs[i], err = audio.Decode(ctx, s.Path, sampleRate, nil)
-		if err != nil {
-			return nil, err
-		}
-	}
-	alignDb := 0.0
-	if p.PA.AutoLevel == "on" {
-		sum := make([][]float32, 2)
-		n := 0
-		for _, b := range bufs {
-			n = max(n, len(b[0]))
-		}
-		for c := range sum {
-			sum[c] = make([]float32, n)
-			for i, b := range bufs {
-				g := float32(dsp.DbToLin(p.Sources[i].GainDb))
-				for k, v := range b[c] {
-					sum[c][k] += v * g
-				}
-			}
-		}
-		lufs := dsp.IntegratedLUFS(sum, sampleRate)
-		if !math.IsInf(lufs, 0) && !math.IsNaN(lufs) {
-			alignDb = math.Min(math.Max(p.PA.InputLufs-lufs, -maxAlignDb), maxAlignDb)
-		}
-	}
-	for i := range bufs {
-		legacyApplyPA(bufs[i], sampleRate, p.Sources[i].GainDb+alignDb, p.PA)
-	}
-	return legacySumBus(bufs), nil
-}
-
 func legacyCrop(buf [][]float32, n int) [][]float32 {
 	out := make([][]float32, len(buf))
 	for c, ch := range buf {

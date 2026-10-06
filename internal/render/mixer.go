@@ -160,11 +160,3 @@ func masterPass(ctx context.Context, in *spool, outLen, songLen int, lufs float6
 	}
 	return meter.Integrated(), ms.Value(), nil
 }
-
-// levelOffsetFromMS は、PA出力の2乗平均 paMS を、マスター後の出力(曲の長さぶん、左右平均)の2乗平均 finalMS にそろえる dB。
-func levelOffsetFromMS(paMS, finalMS float64) float64 {
-	if paMS <= 0 || finalMS <= 0 {
-		return 0
-	}
-	return 10 * math.Log10(finalMS/paMS)
-}

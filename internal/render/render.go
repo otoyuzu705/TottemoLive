@@ -7,6 +7,10 @@
 // PAより後ろの段(距離・遅延・フィルタ・畳み込み)は線形なので、PAの出力を合流してから処理しても
 // 音源ごとに処理して足すのと結果は同じ。非線形なPA質感(コンプ・歪み)だけを音源ごとに並列で回す。
 //
+// 処理は曲を一定の大きさ(既定65536フレーム)のチャンクに区切って流す。各段は状態を持つ処理器(フィルタ・コンプ・
+// 畳み込み・リミッタなど)で、曲全体を一度に処理した場合と、チャンクの大きさに依らずビット単位で同じ結果になる。
+// 曲の長さに依らず、メモリはほぼ一定。段の出力(PA・直接音・残響)は、プレビューのキャッシュ用に一時ファイルへ置く。
+//
 // 書き出しとプレビューは同じ処理(曲全体)を通る。違いは段ごとのキャッシュ(Engine)を使うかどうかだけ。
 package render
 
@@ -15,12 +19,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sync"
 
 	"tottemolive/internal/analysis"
-	"tottemolive/internal/audio"
 	"tottemolive/internal/dsp"
-	"tottemolive/internal/params"
 	"tottemolive/internal/project"
 	"tottemolive/internal/spatial"
 	"tottemolive/internal/venue"
@@ -90,99 +91,15 @@ func prepare(p project.Project) (*prepared, error) {
 	return &prepared{p: p, pr: pr, set: set}, nil
 }
 
-// run は処理グラフを実行する。各段は memo を通すので、e.cache があれば
-// 「その段が読むパラメーター + 上流の段のキー」が同じ限り再計算しない。
-func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Result, error) {
-	pp, err := prepare(p)
-	if err != nil {
-		return nil, err
-	}
-	p = pp.p
+// maxAlignDb は、PA入力のレベル合わせで掛けるゲインの絶対値の上限(dB)。極端に小さい・大きい音源で破綻しないように。
+const maxAlignDb = 40
 
-	// 1. 音源(デコードは、その結果を使う段が必要としたときに行う)
-	srcs := e.sources(p.Sources, prog)
-
-	// 2. 処理
-	steps := newSteps(prog, StageProcess, len(srcs)+4)
-	level, err := e.inputLevelStage(ctx, p, srcs)
-	if err != nil {
-		return nil, err
+// alignDbFor は、音源ゲイン後の合計の統合ラウドネス lufs を pa.inputLufs にそろえるゲイン(dB)。測れなければ 0。
+func alignDbFor(p project.Project, lufs float64) float64 {
+	if math.IsInf(lufs, 0) || math.IsNaN(lufs) {
+		return 0
 	}
-	pa, err := e.paStage(ctx, p, srcs, level, steps)
-	if err != nil {
-		return nil, err
-	}
-	bus := &lazyBus{bufs: pa.bufs} // 直接音・残響が両方キャッシュに当たるときは、バスを作らない
-	songLen := busLen(pa.bufs)
-
-	ir := venue.BuildIR(pp.pr, p.Reverb, sampleRate)
-	// 各段の出力の長さは、残響パラメーターを範囲の上限まで振っても収まる値に固定する
-	// (IRの長さがキーに入ると、残響を動かしたとき直接音まで再計算になるため)。
-	// 実際の長さ(曲 + 現在のIRの尾)へは、ミックスの前に切り詰める
-	total := songLen + maxTailSamples(pp.pr)
-	// 残響は直接音より先に届かない: 最初に届く音(いちばん近いメインスピーカーの直接音)から残響が始まる。
-	// プリディレイはそこからの遅れになる
-	revDelay := firstArrivalSamples(p)
-	outLen := songLen + revDelay + len(ir[0])
-
-	// 4つの系統は互いに独立なので並列に回す
-	var direct, reverb [][]float32
-	var paSpec paSpectrumOut
-	var derr, rerr, aerr error
-	var wg sync.WaitGroup
-	wg.Add(3)
-	go func() {
-		defer wg.Done()
-		if e.analyzePA {
-			paSpec, aerr = e.paSpectrumStage(ctx, bus, pa.key)
-		}
-		steps.done()
-	}()
-	go func() {
-		defer wg.Done()
-		direct, derr = e.directStage(ctx, pp, bus, pa.key, total)
-		steps.done()
-	}()
-	go func() {
-		defer wg.Done()
-		reverb, rerr = e.reverbStage(ctx, pp, bus, ir, pa.key, total)
-		steps.done()
-	}()
-	wg.Wait()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := errors.Join(derr, rerr, aerr); err != nil {
-		return nil, err
-	}
-
-	out := mix(mixGainsFor(p, pp.pr), crop(direct, outLen), crop(reverb, outLen-revDelay), revDelay)
-	master(out, sampleRate, p.Output)
-	steps.done()
-	res := &Result{Audio: out, Frames: len(out[0]), SampleRate: sampleRate, LUFS: dsp.IntegratedLUFS(out, sampleRate)}
-	if paSpec.series != nil {
-		res.PA = &PASpectrum{Series: paSpec.series, OffsetDb: levelOffsetDb(paSpec.meanSquare, out, songLen)}
-	}
-	return res, nil
-}
-
-func crop(buf [][]float32, n int) [][]float32 {
-	out := make([][]float32, len(buf))
-	for c, ch := range buf {
-		out[c] = ch[:min(n, len(ch))]
-	}
-	return out
-}
-
-// maxTailSamples は、残響パラメーターを範囲の上限まで振っても会場IRが収まる長さ。
-func maxTailSamples(pr venue.Preset) int {
-	pre, _ := params.Find("reverb.preDelayMs")
-	decay, _ := params.Find("reverb.decayScale")
-	low, _ := params.Find("reverb.lowDecayScale")
-	sec := venue.IRSeconds(pr, project.Reverb{PreDelayMs: pre.Max, DecayScale: decay.Max, LowDecayScale: low.Max})
-	// 直接音と残響の伝搬遅延(最大の距離ぶん)も見込む
-	sec += venue.MaxDistanceM(pr) / spatial.SpeedOfSound
-	return int(math.Ceil(sec * sampleRate))
+	return math.Min(math.Max(p.PA.InputLufs-lufs, -maxAlignDb), maxAlignDb)
 }
 
 // paSpectrumOut はPA出力の帯域レベルの時系列と、PA出力(モノ)の2乗平均。
@@ -191,203 +108,99 @@ type paSpectrumOut struct {
 	meanSquare float64
 }
 
-// paSpectrumStage はPA出力(サブ分割の前のバスの左右平均)の帯域レベルを、曲全体について求める。
-// 読むもの: PAの出力だけ(キーは PA 段のキーと同じ)。座席・会場・残響・ミックス・マスターには依らない。
-func (e *Engine) paSpectrumStage(ctx context.Context, bus *lazyBus, paKey string) (paSpectrumOut, error) {
-	return memo(e.cache, "paSpectrum", hashKey(paKey, "bands"), func() (paSpectrumOut, error) {
-		in := bus.get()
-		mono := analysis.Mono(in[0], in[1])
-		s, err := analysis.Compute(ctx, mono, sampleRate)
-		if err != nil {
-			return paSpectrumOut{}, err
-		}
-		return paSpectrumOut{series: s, meanSquare: analysis.MeanSquare(mono)}, nil
-	})
-}
-
-// levelOffsetDb は、PA出力の2乗平均 paMS を、マスター後の出力(曲の長さぶん、左右平均)の2乗平均にそろえる dB。
-func levelOffsetDb(paMS float64, out [][]float32, songLen int) float64 {
-	n := min(songLen, len(out[0]))
-	finalMS := analysis.MeanSquare(analysis.Mono(out[0][:n], out[1][:n]))
+// levelOffsetFromMS は、PA出力の2乗平均 paMS を、マスター後の出力(曲の長さぶん、左右平均)の2乗平均 finalMS にそろえる dB。
+func levelOffsetFromMS(paMS, finalMS float64) float64 {
 	if paMS <= 0 || finalMS <= 0 {
 		return 0
 	}
 	return 10 * math.Log10(finalMS/paMS)
 }
 
-// stageOut は上流の段を表す。key はキャッシュキー、load は出力を作る(デコードなど)。
-// 出力を必要とする段(キャッシュに当たらなかった段)だけが load を呼ぶ。
-type stageOut struct {
-	key  string
-	load func(ctx context.Context) ([][]float32, error)
-}
+// --- 段のキャッシュキー: 「その段が読むパラメーターの値 + 上流の段のキー」 ---
 
-// sources は各音源のデコードを上流の段として用意する。デコード結果はキャッシュしない
-// (ffmpegでのデコードは4分の曲で0.3秒ほどで、キャッシュするとその曲ぶんのメモリを常に占める)。
-// キャッシュキーはファイルの同一性(パス・サイズ・更新時刻)で、ゲインはPA段が読む。
-func (e *Engine) sources(sources []project.Source, prog Progress) []stageOut {
-	out := make([]stageOut, len(sources))
-	ratios := make([]float64, len(sources))
-	var mu sync.Mutex
-	report := func(i int, r float64) {
-		mu.Lock()
-		ratios[i] = r
-		sum := 0.0
-		for _, v := range ratios {
-			sum += v
-		}
-		mu.Unlock()
-		prog.report(StageDecode, sum/float64(len(ratios)))
-	}
+// sourceKeys は各音源のキャッシュキー(ファイルの同一性: パス・サイズ・更新時刻)。ゲインはPA段が読む。
+func sourceKeys(sources []project.Source) []string {
+	keys := make([]string, len(sources))
 	for i, s := range sources {
-		out[i] = stageOut{
-			key: hashKey(fileIdentity(s.Path)),
-			load: func(ctx context.Context) ([][]float32, error) {
-				e.decodes.Add(1)
-				buf, err := audio.Decode(ctx, s.Path, sampleRate, func(r float64) { report(i, r) })
-				if err == nil {
-					report(i, 1)
-				}
-				return buf, err
-			},
-		}
+		keys[i] = hashKey(fileIdentity(s.Path))
 	}
-	return out
+	return keys
 }
 
-// paResult は PA段の出力(音源ごと)と、全音源ぶんを合わせたキー。
-type paResult struct {
-	key  string
-	bufs [][][]float32
+// inputLevelKey は、PA入力のレベル合わせの測定のキー。読むもの: 音源のファイルとゲインだけ。
+func inputLevelKey(p project.Project, keys []string) string {
+	parts := make([]any, 0, 2*len(keys))
+	for i, k := range keys {
+		parts = append(parts, k, p.Sources[i].GainDb)
+	}
+	return hashKey(parts...)
 }
 
-// inputLevel はPA入力のレベル合わせの結果。AlignDb はPAの前に全音源へ共通に掛けるゲイン(dB)。
-type inputLevel struct {
-	AlignDb float64
-}
-
-// inputLevelStage は、PAの前にレベルをそろえるゲインを求める。PAのコンプ(スレッショルド -18 dBFS など)と歪みは
+// inputLevelStage は、PAの前にレベルをそろえるゲイン(dB)を求める。PAのコンプ(スレッショルド -18 dBFS など)と歪みは
 // 入力の絶対レベルで効くので、曲のマスターの音量が違うと同じ設定でも効き方が変わり、『別の曲にそのまま適用できる』
 // 音作りプリセットにならない。そこで、音源ゲイン後の合計(バス)の統合ラウドネスを pa.inputLufs にそろえる。
 // 全音源に共通のゲインなので、ボーカルと伴奏などの音量バランスは変わらない。音源のゲインは、その上の微調整になる。
 //
 // 読むもの: 音源のファイルとゲインだけ(測定したラウドネスはキャッシュし、pa.inputLufs の変更ではデコードし直さない)。
 // 測定は音源を流しながら行う(曲全体をメモリに持たない)ので、PA段のデコードとは別に、もう一度デコードする。
-func (e *Engine) inputLevelStage(ctx context.Context, p project.Project, srcs []stageOut) (inputLevel, error) {
+func (e *Engine) inputLevelStage(ctx context.Context, p project.Project, keys []string, dp *decodeProgress) (float64, error) {
 	if p.PA.AutoLevel != "on" {
-		return inputLevel{}, nil
+		return 0, nil
 	}
-	parts := make([]any, 0, 2*len(srcs))
-	for i, s := range srcs {
-		parts = append(parts, s.key, p.Sources[i].GainDb)
-	}
-	key := hashKey(parts...)
-	lufs, err := memo(e.cache, "inputLevel", key, func() (float64, error) {
-		return e.measureInputLevel(ctx, p, nil)
+	lufs, err := memo(e.cache, "inputLevel", inputLevelKey(p, keys), func() (float64, error) {
+		return e.measureInputLevel(ctx, p, dp)
 	})
 	if err != nil {
-		return inputLevel{}, err
+		return 0, err
 	}
-	lv := inputLevel{}
-	if !math.IsInf(lufs, 0) && !math.IsNaN(lufs) {
-		lv.AlignDb = math.Min(math.Max(p.PA.InputLufs-lufs, -maxAlignDb), maxAlignDb)
-	}
-	return lv, nil
+	return alignDbFor(p, lufs), nil
 }
 
-// maxAlignDb は、PA入力のレベル合わせで掛けるゲインの絶対値の上限(dB)。極端に小さい・大きい音源で破綻しないように。
-const maxAlignDb = 40
-
-// paStage は音源ごとに(ゲイン + レベル合わせ → PA質感)を並列に処理する。
-// 読むもの: 音源のゲイン、レベル合わせのゲイン、pa.* の全項目(autoLevel・inputLufs を含む)、上流のデコード結果。
-func (e *Engine) paStage(ctx context.Context, p project.Project, srcs []stageOut, level inputLevel, steps *steps) (paResult, error) {
-	res := paResult{bufs: make([][][]float32, len(srcs))}
-	keys := make([]string, len(srcs))
-	errs := make([]error, len(srcs))
-	var wg sync.WaitGroup
-	for i := range srcs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer steps.done()
-			keys[i] = hashKey(srcs[i].key, p.Sources[i].GainDb, level.AlignDb, p.PA)
-			res.bufs[i], errs[i] = memo(e.cache, fmt.Sprintf("pa:%d", i), keys[i], func() ([][]float32, error) {
-				buf, err := srcs[i].load(ctx) // デコード結果は他で使わないので、その場で処理してよい
-				if err != nil {
-					return nil, err
-				}
-				applyPA(buf, sampleRate, p.Sources[i].GainDb+level.AlignDb, p.PA)
-				return buf, nil
-			})
-		}()
+// paKeyFor はPA段のキー。読むもの: 音源のゲイン、レベル合わせのゲイン、pa.* の全項目(autoLevel・inputLufs を含む)、
+// 上流のデコード結果(音源のファイル)。
+func paKeyFor(p project.Project, keys []string, alignDb float64) string {
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = hashKey(k, p.Sources[i].GainDb, alignDb, p.PA)
 	}
-	wg.Wait()
-	if err := ctx.Err(); err != nil {
-		return paResult{}, err
-	}
-	res.key = hashKey(keys)
-	return res, errors.Join(errs...)
+	return hashKey(parts)
 }
 
-// busLen は音源ごとのPA出力のうち最長のもの(バスの長さ)。
-func busLen(bufs [][][]float32) int {
-	n := 0
-	for _, s := range bufs {
-		n = max(n, len(s[0]))
-	}
-	return n
-}
+// paSpectrumKeyFor は、PA出力の帯域レベルのキー。読むもの: PAの出力だけ。座席・会場・残響・ミックス・マスターには依らない。
+func paSpectrumKeyFor(paKey string) string { return hashKey(paKey, "bands") }
 
-// lazyBus はPA出力の合計(バス)を、最初に必要とされたときに一度だけ作る。
-type lazyBus struct {
-	once sync.Once
-	bufs [][][]float32
-	bus  [][]float32
-}
-
-func (b *lazyBus) get() [][]float32 {
-	b.once.Do(func() { b.bus = sumBus(b.bufs) })
-	return b.bus
-}
-
-// sumBus は音源ごとのPA出力を足し合わせる。長さは最長の音源にそろえる。
-func sumBus(bufs [][][]float32) [][]float32 {
-	n := 0
-	for _, s := range bufs {
-		n = max(n, len(s[0]))
-	}
-	bus := [][]float32{make([]float32, n), make([]float32, n)}
-	for _, s := range bufs {
-		for c := range bus {
-			for i, v := range s[c] {
-				bus[c][i] += v
-			}
-		}
-	}
-	return bus
-}
-
-// directStage は左右のPAスピーカーを仮想スピーカーとして置き、リスナーの耳に届く直接音を返す。
-// スピーカーが1本ならモノラル和を、2本以上ならチャンネルを順に割り当てる(L,R,L,R...)。
-// サブウーファーが有効なときは、PA出力をクロスオーバーで分け、メインには中高域だけを送り、
-// 低域はサブ経路(左右のモノ和 → 距離減衰・遅延 → 両耳に同じ信号)で足す。
-// 読むもの: リスナー、メイン・サブの位置、sub.*、spatial.hrirSet / distanceRolloff / airAbsorption、PAの出力、長さ。
+// directKeyFor は直接音のキー。
+// 読むもの: リスナー、メイン・サブの位置、sub.*、spatial.hrirSet / distanceRolloff / airAbsorption、PAの出力。
 // (spatial.directLevelDb はミックス段が読む)
-func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, paKey string, total int) ([][]float32, error) {
+// 左右のPAスピーカーを仮想スピーカーとして置き、リスナーの耳に届く直接音を作る。スピーカーが1本ならモノラル和を、
+// 2本以上ならチャンネルを順に割り当てる(L,R,L,R...)。サブウーファーが有効なときは、PA出力をクロスオーバーで分け、
+// メインには中高域だけを送り、低域はサブ経路(左右のモノ和 → 距離減衰・遅延 → 両耳に同じ信号)で足す。
+func directKeyFor(pp *prepared, paKey string) string {
 	p := pp.p
 	sub := p.Sub
-	if !subsActive(p) {
-		sub = project.Sub{} // サブが無効なら、サブの設定と位置は直接音に影響しない(キーにも入れない)
-	}
 	subs := p.Venue.Subs
 	if !subsActive(p) {
+		sub = project.Sub{} // サブが無効なら、サブの設定と位置は直接音に影響しない(キーにも入れない)
 		subs = nil
 	}
-	key := hashKey(paKey, total, p.Venue.Preset, p.Listener, p.Venue.Speakers, subs, sub,
+	return hashKey(paKey, p.Venue.Preset, p.Listener, p.Venue.Speakers, subs, sub,
 		p.Spatial.HrirSet, p.Spatial.DistanceRolloff, p.Spatial.AirAbsorption)
-	return memo(e.cache, "direct", key, func() ([][]float32, error) {
-		return directCompute(ctx, pp, bus.get(), total)
-	})
+}
+
+// reverbKeyFor は残響のキー。スピーカーから放射された音(radiatedProc)を会場IR(左右)で畳み込む。
+// 残響は距離減衰を掛ける前の信号で駆動する(拡散音場のレベルは距離に依らないため)。
+// 読むもの: 会場、reverb.preDelayMs / decayScale / highDampHz / low*(低域の残響) / high*(高域の残響)、
+// sub.*(サブが有効か・レベル・クロスオーバー。サブの低域も会場を励起するので残響に入る)、PAの出力。
+// (reverb.mix はミックス段)
+func reverbKeyFor(pp *prepared, paKey string) string {
+	r := pp.p.Reverb
+	sub := pp.p.Sub
+	active := subsActive(pp.p)
+	if !active {
+		sub = project.Sub{} // サブが無効なら、サブの設定は残響に影響しない(キーにも入れない)
+	}
+	return hashKey(paKey, pp.p.Venue.Preset, r.PreDelayMs, r.DecayScale, r.HighDampHz,
+		r.LowCoherence, r.LowDecayScale, r.LowLevelDb, r.LowCrossoverHz, r.HighDecayScale, r.HighDecayHz, active, sub)
 }
 
 // subAlignReference は、サブをメインに時間合わせする基準点(現場のFOH: 客席の中央、奥行きの半分、耳の高さ)。
@@ -410,25 +223,6 @@ func subAlignDelays(p project.Project, pr venue.Preset) []int {
 // subsActive はサブウーファー経路が有効か(有効にしてあり、サブが1台以上ある)。
 func subsActive(p project.Project) bool {
 	return p.Sub.Enabled == "on" && len(p.Venue.Subs) > 0
-}
-
-// reverbStage はスピーカーから放射された音(radiatedMono)を会場IR(左右)で畳み込む。
-// 残響は距離減衰を掛ける前の信号で駆動する(拡散音場のレベルは距離に依らないため)。
-// 読むもの: 会場、reverb.preDelayMs / decayScale / highDampHz / low*(低域の残響) / high*(高域の残響)、
-// sub.*(サブが有効か・レベル・クロスオーバー。サブの低域も会場を励起するので残響に入る)、PAの出力、長さ。
-// (reverb.mix はミックス段)
-func (e *Engine) reverbStage(ctx context.Context, pp *prepared, bus *lazyBus, ir [][]float32, paKey string, total int) ([][]float32, error) {
-	r := pp.p.Reverb
-	sub := pp.p.Sub
-	active := subsActive(pp.p)
-	if !active {
-		sub = project.Sub{} // サブが無効なら、サブの設定は残響に影響しない(キーにも入れない)
-	}
-	key := hashKey(paKey, total, pp.p.Venue.Preset, r.PreDelayMs, r.DecayScale, r.HighDampHz,
-		r.LowCoherence, r.LowDecayScale, r.LowLevelDb, r.LowCrossoverHz, r.HighDecayScale, r.HighDecayHz, active, sub)
-	return memo(e.cache, "reverb", key, func() ([][]float32, error) {
-		return reverbCompute(ctx, pp, bus.get(), ir, total)
-	})
 }
 
 // mixGains は、ミックスの2本のゲイン(線形)。
@@ -464,7 +258,8 @@ func firstArrivalSamples(p project.Project) int {
 	return max(first, 0)
 }
 
-// master はラウドネスを目標値に合わせ、トゥルーピークリミッタで仕上げる。
+// master はラウドネスを目標値に合わせ、トゥルーピークリミッタで仕上げる(buf 全体をその場で)。
+// 先行プレビューの窓が曲全体のときに使う。曲全体の書き出し・プレビューは masterPass(流し処理)。
 func master(buf [][]float32, sr int, o project.Output) {
 	lufs := dsp.IntegratedLUFS(buf, sr)
 	if !math.IsInf(lufs, 0) && !math.IsNaN(lufs) {
@@ -476,26 +271,4 @@ func master(buf [][]float32, sr int, o project.Output) {
 		}
 	}
 	dsp.TruePeakLimit(buf, sr, o.CeilingDbTp)
-}
-
-// steps は処理段階の進捗を「完了したタスク数 / 全タスク数」で通知する。
-type steps struct {
-	mu    sync.Mutex
-	n     int
-	total int
-	stage string
-	prog  Progress
-}
-
-func newSteps(prog Progress, stage string, total int) *steps {
-	prog.report(stage, 0)
-	return &steps{prog: prog, stage: stage, total: total}
-}
-
-func (s *steps) done() {
-	s.mu.Lock()
-	s.n++
-	r := float64(s.n) / float64(s.total)
-	s.mu.Unlock()
-	s.prog.report(s.stage, r)
 }

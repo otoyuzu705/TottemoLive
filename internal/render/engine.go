@@ -75,9 +75,15 @@ func (e *Engine) Close() error {
 func NewEngine() *Engine { return &Engine{cache: newCache(), analyzePA: true} }
 
 // Preview は曲全体を、書き出しと同じ処理でレンダリングする(段ごとのキャッシュを使う)。
-// 音量も曲全体で測るので、書き出しと同じになる。
+// 音量も曲全体で測るので、書き出しと同じになる。結果の音声をメモリに持つので、テストと短い素材用。
+// 長い曲は PreviewTo で、出力をファイルへ流す。
 func (e *Engine) Preview(ctx context.Context, p project.Project, prog Progress) (*Result, error) {
-	return e.run(ctx, p, prog)
+	return e.renderMem(ctx, p, prog)
+}
+
+// PreviewTo は曲全体を、書き出しと同じ処理でレンダリングして sink へ流す(段ごとのキャッシュを使う)。
+func (e *Engine) PreviewTo(ctx context.Context, p project.Project, prog Progress, sink Sink) (*Result, error) {
+	return e.RenderTo(ctx, p, prog, sink)
 }
 
 // CacheStat は段(スロット)ごとの計算回数とキャッシュヒット回数。
@@ -147,6 +153,40 @@ func memo[T any](c *cache, slot, key string, compute func() (T, error)) (T, erro
 		c.mu.Unlock()
 	}
 	return v, nil
+}
+
+// lookup はスロット slot の値(メモリに持つもの)が key と一致すれば返す。一致しなければ、古いエントリを外す。
+// c が nil なら常に false。
+func (c *cache) lookup(slot, key string) (any, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.slots[slot]; ok {
+		if e.key == key {
+			s := c.stat[slot]
+			s.Hits++
+			c.stat[slot] = s
+			return e.val, true
+		}
+		c.dropLocked(slot)
+	}
+	return nil, false
+}
+
+// put は新しく計算した値(メモリに持つもの)をスロットに登録する。
+func (c *cache) put(slot, key string, v any) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.dropLocked(slot)
+	c.slots[slot] = cacheEntry{key: key, val: v}
+	s := c.stat[slot]
+	s.Computed++
+	c.stat[slot] = s
 }
 
 // hashKey は値の並びからキャッシュキーを作る。構造体はフィールド名つきで展開されるので、

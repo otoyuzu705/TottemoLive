@@ -3,6 +3,7 @@ package render
 import (
 	"context"
 	"errors"
+	"io"
 	"math"
 
 	"tottemolive/internal/dsp"
@@ -49,16 +50,17 @@ func (e *Engine) previewWindow(ctx context.Context, p project.Project, startSec,
 		return nil, err
 	}
 	p = pp.p
-	srcs := e.sources(p.Sources, nil)
-	level, err := e.inputLevelStage(ctx, p, srcs)
+	keys := sourceKeys(p.Sources)
+	alignDb, err := e.inputLevelStage(ctx, p, keys, nil)
 	if err != nil {
 		return nil, err
 	}
-	pa, err := e.paStage(ctx, p, srcs, level, newSteps(nil, StageProcess, len(srcs)))
+	paSp, release, err := e.ensurePA(ctx, p, keys, alignDb)
 	if err != nil {
 		return nil, err
 	}
-	songLen := busLen(pa.bufs)
+	defer release()
+	songLen := paSp.meta.SongLen
 	ir := venue.BuildIR(pp.pr, p.Reverb, sampleRate)
 	revDelay := firstArrivalSamples(p)
 	outLen := songLen + revDelay + len(ir[0])
@@ -73,7 +75,10 @@ func (e *Engine) previewWindow(ctx context.Context, p project.Project, startSec,
 	// 窓に届く音は、窓より前のバスにもある(残響の尾と伝搬遅延)。その長さぶん手前から計算する
 	maxDelay := int(math.Ceil(venue.MaxDistanceM(pp.pr) / spatial.SpeedOfSound * sampleRate))
 	a := max(s0-len(ir[0])-maxDelay, 0)
-	seg := sumBusRange(pa.bufs, a, min(s1, songLen))
+	seg, err := paSp.ReadRange(a, min(s1, songLen))
+	if err != nil {
+		return nil, err
+	}
 	n := s1 - a // 区間の出力の長さ(区間の先頭 = 曲の a サンプル目)
 
 	var direct, reverb [][]float32
@@ -100,7 +105,7 @@ func (e *Engine) previewWindow(ctx context.Context, p project.Project, startSec,
 	if s0 == 0 && s1 == outLen {
 		master(out, sampleRate, p.Output) // 窓が曲全体なら、推定せず正確に測れる
 	} else {
-		gainDb, ok, err := e.estimateMasterGainDb(p, pa, out, s0, s1, revDelay, songLen)
+		gainDb, ok, err := estimateMasterGainDb(p, paSp, out, s0, s1, revDelay, songLen)
 		if err != nil {
 			return nil, err
 		}
@@ -117,24 +122,92 @@ func (e *Engine) previewWindow(ctx context.Context, p project.Project, startSec,
 	return &Window{Audio: out, SampleRate: sampleRate, StartSec: float64(s0) / sampleRate, TotalSec: float64(outLen) / sampleRate}, nil
 }
 
+// ensurePA はPA段の出力(バス)のスプールを返す。キャッシュに当たればそれを、外れたら、音源を流して(PAだけの
+// パスで)作ってキャッシュに登録する(続く曲全体の処理がこの段を再計算しない)。呼び出し側は、使い終わったら release を呼ぶ。
+// キャッシュなしのエンジンでは、使い捨ての一時ファイルに作り、release で消す。
+func (e *Engine) ensurePA(ctx context.Context, p project.Project, keys []string, alignDb float64) (*spool, func(), error) {
+	paKey := paKeyFor(p, keys, alignDb)
+	if s, ok := e.cache.lookupSpool("pa", paKey); ok {
+		return s, s.release, nil
+	}
+	dir, cleanup, err := e.runDir()
+	if err != nil {
+		return nil, nil, err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			cleanup()
+		}
+	}()
+	decs, err := e.openSources(ctx, p.Sources, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	pas := make([]*paProc, len(p.Sources))
+	for i, s := range p.Sources {
+		pas[i] = newPAProc(sampleRate, s.GainDb+alignDb, p.PA)
+	}
+	bus := newLiveBus(decs, pas, nil, e.chunkSize())
+	defer bus.close()
+	w, err := newSpoolWriter(dir, 2)
+	if err != nil {
+		return nil, nil, err
+	}
+	meter := dsp.NewLoudnessMeter(sampleRate, 2)
+	buf := [][]float32{make([]float32, e.chunkSize()), make([]float32, e.chunkSize())}
+	for {
+		if err := ctx.Err(); err != nil {
+			w.Abort()
+			return nil, nil, err
+		}
+		n, err := bus.Read(buf)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			w.Abort()
+			return nil, nil, err
+		}
+		chunk := [][]float32{buf[0][:n], buf[1][:n]}
+		meter.Write(chunk)
+		if err := w.Write(chunk); err != nil {
+			w.Abort()
+			return nil, nil, err
+		}
+	}
+	sp, err := w.Commit(spoolMeta{SongLen: bus.frames, BusLufs: meter.Integrated()})
+	if err != nil {
+		return nil, nil, err
+	}
+	ok = true
+	if e.cache == nil {
+		return sp, func() { sp.release(); cleanup() }, nil
+	}
+	e.cache.putSpool("pa", paKey, sp)
+	if !sp.acquire() {
+		return nil, nil, errors.New("render: PA段の一時ファイルがすでに解放されています")
+	}
+	return sp, sp.release, nil
+}
+
 // estimateMasterGainDb は、先行プレビューに掛けるラウドネス調整のゲイン(dB)を推定する。
 // 曲全体の出力のラウドネスは、曲全体を処理し終わるまで分からない。一方、直接音・残響・ミックスは時間に依らない
 // 線形の処理なので、「ミックス後の出力のラウドネス」と「PA出力(バス)のラウドネス」の差は、曲のどの位置でも
 // ほぼ一定になる。そこで、窓での差(出力 − バス)を、曲全体のバスのラウドネスに足して、曲全体の出力の
 // ラウドネスを推定する(窓だけのラウドネスで合わせると、サビと静かな部分とで音量が大きく変わってしまう)。
 // 窓が無音などで測れないときは ok=false(ゲインを掛けない)。
-// out はゲインを掛ける前の窓の出力(曲の s0〜s1)。
-func (e *Engine) estimateMasterGainDb(p project.Project, pa paResult, out [][]float32,
+// out はゲインを掛ける前の窓の出力(曲の s0〜s1)。曲全体のバスのラウドネスは、PA段のスプールのメタが持つ。
+func estimateMasterGainDb(p project.Project, paSp *spool, out [][]float32,
 	s0, s1, revDelay, songLen int) (gainDb float64, ok bool, err error) {
-	whole, err := memo(e.cache, "busLufs", hashKey(pa.key), func() (float64, error) {
-		return dsp.IntegratedLUFS(sumBusRange(pa.bufs, 0, songLen), sampleRate), nil
-	})
+	whole := paSp.meta.BusLufs
+	// 窓の出力は、バスより revDelay ぶん遅れて届くので、同じ音の区間で比べる
+	b0, b1 := min(max(s0-revDelay, 0), songLen), min(max(s1-revDelay, 0), songLen)
+	seg, err := paSp.ReadRange(b0, b1)
 	if err != nil {
 		return 0, false, err
 	}
-	// 窓の出力は、バスより revDelay ぶん遅れて届くので、同じ音の区間で比べる
-	b0, b1 := min(max(s0-revDelay, 0), songLen), min(max(s1-revDelay, 0), songLen)
-	busWin := dsp.IntegratedLUFS(sumBusRange(pa.bufs, b0, b1), sampleRate)
+	busWin := dsp.IntegratedLUFS(seg, sampleRate)
 	outWin := dsp.IntegratedLUFS(out, sampleRate)
 	if bad(whole) || bad(busWin) || bad(outWin) {
 		return 0, false, nil
@@ -143,23 +216,6 @@ func (e *Engine) estimateMasterGainDb(p project.Project, pa paResult, out [][]fl
 }
 
 func bad(v float64) bool { return math.IsInf(v, 0) || math.IsNaN(v) }
-
-// sumBusRange は、音源ごとのPA出力の [from, to) を足し合わせる(区間の外・音源の外は無音)。
-func sumBusRange(bufs [][][]float32, from, to int) [][]float32 {
-	n := max(to-from, 0)
-	bus := [][]float32{make([]float32, n), make([]float32, n)}
-	for _, s := range bufs {
-		for c := range bus {
-			if from >= len(s[c]) {
-				continue
-			}
-			for i, v := range s[c][from:min(to, len(s[c]))] {
-				bus[c][i] += v
-			}
-		}
-	}
-	return bus
-}
 
 // cropRange は buf の [from, to) を返す。範囲の外(負の添字や末尾の先)は無音で埋める。
 func cropRange(buf [][]float32, from, to int) [][]float32 {

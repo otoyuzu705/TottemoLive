@@ -152,9 +152,17 @@ func (b *liveBus) close() {
 
 // decodeProgress は、音源ごとのデコードの進み具合を平均して、デコード段階の進捗として通知する。
 type decodeProgress struct {
-	mu     sync.Mutex
-	ratios []float64
-	prog   Progress
+	mu      sync.Mutex
+	ratios  []float64
+	prog    Progress
+	touched bool // 進捗を通知した(デコードが行われた)
+}
+
+// used は、進捗を一度でも通知したか(この進捗でデコード段階を報告済みか)。
+func (d *decodeProgress) used() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.touched
 }
 
 func newDecodeProgress(prog Progress, n int) *decodeProgress {
@@ -168,6 +176,7 @@ func (d *decodeProgress) fn(i int) func(float64) {
 	}
 	return func(r float64) {
 		d.mu.Lock()
+		d.touched = true
 		d.ratios[i] = r
 		sum := 0.0
 		for _, v := range d.ratios {

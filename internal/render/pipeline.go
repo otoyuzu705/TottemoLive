@@ -71,8 +71,95 @@ func (w *wavSink) close() error {
 	return w.enc.Close()
 }
 
+// busReader はバスを区切って読み出すもの(音源を流す liveBus か、PA段のスプール)。
+type busReader interface {
+	// Read は dst を満たすまで読む。終わりは 0, io.EOF。
+	Read(dst [][]float32) (int, error)
+}
+
+// spoolMixSrc は、キャッシュに当たった段(直接音・残響)のスプールを、ミックスの入力として順に読む。
+// スプールは書き終えているので、入力はいつでもそろっている(終わりの先は無音)。読み出しの位置は、
+// 順に増えていく前提(位置が飛んだら読み直す)。読み出しの失敗は err に残る。
+type spoolMixSrc struct {
+	s   *spool
+	r   *spoolReader
+	pos int
+	err error
+}
+
+func (m *spoolMixSrc) availFrom(pos int) int { return math.MaxInt }
+
+func (m *spoolMixSrc) readAt(pos int, dst [][]float32) {
+	n := len(dst[0])
+	for c := range dst {
+		clear(dst[c])
+	}
+	skip := max(-pos, 0) // 曲頭より前は無音
+	start := pos + skip
+	cnt := min(n-skip, m.s.frames-start)
+	if m.err != nil || cnt <= 0 {
+		return
+	}
+	if m.r == nil || m.pos != start {
+		if m.r != nil {
+			m.r.Close()
+			m.r = nil
+		}
+		r, err := m.s.open(start)
+		if err != nil {
+			m.err = err
+			return
+		}
+		m.r = r
+	}
+	part := make([][]float32, len(dst))
+	for c := range dst {
+		part[c] = dst[c][skip : skip+cnt]
+	}
+	got, err := m.r.Read(part)
+	if err != nil && err != io.EOF {
+		m.err = err
+	}
+	m.pos = start + got
+}
+
+func (m *spoolMixSrc) close() {
+	if m.r != nil {
+		m.r.Close()
+		m.r = nil
+	}
+}
+
+// queueTee は、待ち行列に出てきた出力を、キャッシュ用のスプールにも書き写す。
+// ミックスが先に読み進めて捨ててしまわないよう、ミックスの前に flush すること。
+type queueTee struct {
+	w   *spoolWriter
+	pos int
+}
+
+func (t *queueTee) flush(q *frameQueue) error {
+	n := q.produced - t.pos
+	if t.w == nil || n <= 0 {
+		return nil
+	}
+	buf := make([][]float32, len(q.ch))
+	for c := range buf {
+		buf[c] = make([]float32, n)
+	}
+	q.readAt(t.pos, buf)
+	t.pos = q.produced
+	return t.w.Write(buf)
+}
+
 // RenderTo はプロジェクト全体を、音源を流しながらレンダリングして sink へ書き出す。
 // 曲の長さに依らず、メモリはほぼ一定(段の出力は一時ファイルに置く)。
+//
+// キャッシュ付きのエンジン(プレビュー)は、段ごとの出力(PA・直接音・残響・PA出力の帯域レベル)をキャッシュし、
+// キーが一致する段は計算せずにスプールから読む。流れは、3つのパス:
+//
+//	パス0: PA入力のレベル合わせのために、音源ゲイン後の合計のラウドネスを測る(autoLevel が on で、結果が無いとき)
+//	パス1: バス(音源 → PA、またはPAのスプール)→ 直接音・残響・帯域レベル → ミックスを一時ファイルへ
+//	パス2: マスター(ラウドネス調整 → リミッタ)を掛けて sink へ
 func (e *Engine) RenderTo(ctx context.Context, p project.Project, prog Progress, sink Sink) (*Result, error) {
 	pp, err := prepare(p)
 	if err != nil {
@@ -84,130 +171,312 @@ func (e *Engine) RenderTo(ctx context.Context, p project.Project, prog Progress,
 		return nil, err
 	}
 	defer cleanup()
+	chunk := e.chunkSize()
 
-	// パス0: PA入力のレベル合わせのために、音源ゲイン後の合計のラウドネスを測る
+	// パス0: レベル合わせ(測定したときは、デコードの進捗はそちらで通知する)
+	keys := sourceKeys(p.Sources)
 	dp := newDecodeProgress(prog, len(p.Sources))
-	alignDb := 0.0
-	if p.PA.AutoLevel == "on" {
-		lufs, err := e.measureInputLevel(ctx, p, dp)
-		if err != nil {
-			return nil, err
-		}
-		if !math.IsInf(lufs, 0) && !math.IsNaN(lufs) {
-			alignDb = math.Min(math.Max(p.PA.InputLufs-lufs, -maxAlignDb), maxAlignDb)
-		}
-		dp = nil // デコードの進捗は、測定のほうで通知した
+	alignDb, err := e.inputLevelStage(ctx, p, keys, dp)
+	if err != nil {
+		return nil, err
+	}
+	if dp.used() {
+		dp = nil
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	// パス1: 音源 → PA → バス → 直接音・残響・(スペクトラム) → ミックス(一時ファイルへ)
-	prog.report(StageProcess, 0)
-	decs, err := e.openSources(ctx, p.Sources, dp)
-	if err != nil {
-		return nil, err
+	// 段のキャッシュを調べる。当たった段は、この実行の間だけ参照を持つ(終わったら返す)
+	paKey := paKeyFor(p, keys, alignDb)
+	dKey, rKey, sKey := directKeyFor(pp, paKey), reverbKeyFor(pp, paKey), paSpectrumKeyFor(paKey)
+	var held []*spool
+	defer func() {
+		for _, s := range held {
+			s.release()
+		}
+	}()
+	lookup := func(slot, key string) *spool {
+		if s, ok := e.cache.lookupSpool(slot, key); ok {
+			held = append(held, s)
+			return s
+		}
+		return nil
 	}
-	pas := make([]*paProc, len(p.Sources))
-	for i, s := range p.Sources {
-		pas[i] = newPAProc(sampleRate, s.GainDb+alignDb, p.PA)
+	paSp, dSp, rSp := lookup("pa", paKey), lookup("direct", dKey), lookup("reverb", rKey)
+	var spec paSpectrumOut
+	hitSpec := false
+	if e.analyzePA {
+		if v, ok := e.cache.lookup("paSpectrum", sKey); ok {
+			spec, hitSpec = v.(paSpectrumOut), true
+		}
 	}
-	bus := newLiveBus(decs, pas, nil, e.chunkSize())
-	defer bus.close()
-	expected := expectedFrames(decs)
+	needD, needR, needSpec := dSp == nil, rSp == nil, e.analyzePA && !hitSpec
+	needBus := needD || needR || needSpec
 
 	ir := venue.BuildIR(pp.pr, p.Reverb, sampleRate)
 	// 残響は直接音より先に届かない: 最初に届く音(いちばん近いメインスピーカーの直接音)から残響が始まる。
 	// プリディレイはそこからの遅れになる
 	revDelay := firstArrivalSamples(p)
-	dproc, rproc := newDirectProc(pp), newReverbProc(pp, ir)
+
+	// 曲の長さは、キャッシュに当たった段のメタから分かる。無ければ、バスを最後まで読んで分かる
+	songLen, known := 0, false
+	for _, s := range []*spool{paSp, dSp, rSp} {
+		if s != nil {
+			songLen, known = s.meta.SongLen, true
+		}
+	}
+	outLen := songLen + revDelay + len(ir[0])
+
+	// バスの入力
+	var busR busReader
+	var live *liveBus
+	expected := songLen
+	var paw *spoolWriter
+	var busMeter *dsp.LoudnessMeter
+	if needBus {
+		if paSp != nil {
+			r, err := paSp.open(0)
+			if err != nil {
+				return nil, err
+			}
+			defer r.Close()
+			busR = r
+		} else {
+			decs, err := e.openSources(ctx, p.Sources, dp)
+			if err != nil {
+				return nil, err
+			}
+			pas := make([]*paProc, len(p.Sources))
+			for i, s := range p.Sources {
+				pas[i] = newPAProc(sampleRate, s.GainDb+alignDb, p.PA)
+			}
+			live = newLiveBus(decs, pas, nil, chunk)
+			defer live.close()
+			busR, expected = live, expectedFrames(decs)
+			if e.cache != nil { // バスはキャッシュにも残す
+				if paw, err = newSpoolWriter(dir, 2); err != nil {
+					return nil, err
+				}
+				busMeter = dsp.NewLoudnessMeter(sampleRate, 2)
+			}
+		}
+	}
+
+	// 直接音・残響の処理器と、当たった段のスプールの読み出し
+	var dproc *directProc
+	var rproc *reverbProc
+	var dw, rw *spoolWriter
+	var dsrc, rsrc mixSrc
+	if needD {
+		dproc = newDirectProc(pp)
+		dsrc = dproc.out
+		if e.cache != nil {
+			if dw, err = newSpoolWriter(dir, 2); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		m := &spoolMixSrc{s: dSp}
+		defer m.close()
+		dsrc = m
+	}
+	if needR {
+		rproc = newReverbProc(pp, ir)
+		rsrc = rproc.out
+		if e.cache != nil {
+			if rw, err = newSpoolWriter(dir, 2); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		m := &spoolMixSrc{s: rSp}
+		defer m.close()
+		rsrc = m
+	}
 	var an *analysis.Analyzer
 	var paMS analysis.MeanSquareAcc
-	if e.analyzePA {
+	if needSpec {
 		an = analysis.NewAnalyzer(sampleRate)
 	}
+	dtee, rtee := &queueTee{w: dw}, &queueTee{w: rw}
 
 	mw, err := newSpoolWriter(dir, 2)
 	if err != nil {
 		return nil, err
 	}
-	mixMeter := dsp.NewLoudnessMeter(sampleRate, 2)
-	mx := &mixer{g: mixGainsFor(p, pp.pr), revDelay: revDelay, d: dproc.out, r: rproc.out,
-		emit: func(buf [][]float32) error {
-			mixMeter.Write(buf)
-			return mw.Write(buf)
-		}}
-
-	buf := [][]float32{make([]float32, e.chunkSize()), make([]float32, e.chunkSize())}
-	for {
-		if err := ctx.Err(); err != nil {
-			mw.Abort()
-			return nil, err
-		}
-		n, err := bus.Read(buf)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			mw.Abort()
-			return nil, err
-		}
-		chunk := [][]float32{buf[0][:n], buf[1][:n]}
-		var aerr error
-		var wg sync.WaitGroup
-		wg.Add(3)
-		go func() { defer wg.Done(); dproc.Push(chunk) }()
-		go func() { defer wg.Done(); rproc.Push(chunk) }()
-		go func() {
-			defer wg.Done()
-			if an != nil {
-				mono := analysis.Mono(chunk[0], chunk[1])
-				paMS.Add(mono)
-				aerr = an.Write(ctx, mono)
+	writers := []*spoolWriter{mw, paw, dw, rw} // 失敗・中断のときは、書きかけを消す
+	abort := func(err error) (*Result, error) {
+		for _, w := range writers {
+			if w != nil {
+				w.Abort()
 			}
-		}()
-		wg.Wait()
-		if aerr == nil {
-			aerr = mx.drain(math.MaxInt)
 		}
-		if aerr != nil {
-			mw.Abort()
-			if cerr := ctx.Err(); cerr != nil {
-				return nil, cerr
-			}
-			return nil, aerr
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
 		}
-		if expected > 0 {
-			prog.report(StageProcess, float64(bus.frames)/float64(expected))
-		}
-	}
-	songLen := bus.frames
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); dproc.Flush() }()
-	go func() { defer wg.Done(); rproc.Flush() }()
-	wg.Wait()
-	outLen := songLen + revDelay + len(ir[0])
-	if err := mx.drain(outLen); err != nil {
-		mw.Abort()
 		return nil, err
 	}
-	if mx.pos != outLen {
-		mw.Abort()
-		return nil, fmt.Errorf("render: ミックスが %d フレームのはずが %d フレームでした", outLen, mx.pos)
+
+	mixMeter := dsp.NewLoudnessMeter(sampleRate, 2)
+	prog.report(StageProcess, 0)
+	mx := &mixer{g: mixGainsFor(p, pp.pr), revDelay: revDelay, d: dsrc, r: rsrc}
+	mx.emit = func(buf [][]float32) error {
+		mixMeter.Write(buf)
+		if !needBus && outLen > 0 { // バスを読まないときの進捗は、ミックスの進み具合
+			prog.report(StageProcess, float64(mx.pos+len(buf[0]))/float64(outLen))
+		}
+		return mw.Write(buf)
+	}
+	limit := math.MaxInt // 曲の長さが分からないうちは、入力がそろった所まで
+	if known {
+		limit = outLen
+	}
+	srcErr := func() error { return errors.Join(spoolErr(dsrc), spoolErr(rsrc)) }
+
+	if needBus {
+		buf := [][]float32{make([]float32, chunk), make([]float32, chunk)}
+		frames := 0
+		for {
+			if err := ctx.Err(); err != nil {
+				return abort(err)
+			}
+			n, err := busR.Read(buf)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return abort(err)
+			}
+			frames += n
+			bus := [][]float32{buf[0][:n], buf[1][:n]}
+			if paw != nil {
+				busMeter.Write(bus)
+				if err := paw.Write(bus); err != nil {
+					return abort(err)
+				}
+			}
+			var aerr error
+			var wg sync.WaitGroup
+			if needD {
+				wg.Add(1)
+				go func() { defer wg.Done(); dproc.Push(bus) }()
+			}
+			if needR {
+				wg.Add(1)
+				go func() { defer wg.Done(); rproc.Push(bus) }()
+			}
+			if needSpec {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					mono := analysis.Mono(bus[0], bus[1])
+					paMS.Add(mono)
+					aerr = an.Write(ctx, mono)
+				}()
+			}
+			wg.Wait()
+			if aerr == nil && needD {
+				aerr = dtee.flush(dproc.out)
+			}
+			if aerr == nil && needR {
+				aerr = rtee.flush(rproc.out)
+			}
+			if aerr == nil {
+				aerr = mx.drain(limit)
+			}
+			if aerr == nil {
+				aerr = srcErr()
+			}
+			if aerr != nil {
+				return abort(aerr)
+			}
+			if expected > 0 {
+				prog.report(StageProcess, float64(frames)/float64(expected))
+			}
+		}
+		if known && frames != songLen {
+			return abort(fmt.Errorf("render: キャッシュの長さ(%d)と音源の長さ(%d)が合いません", songLen, frames))
+		}
+		songLen = frames
+		outLen = songLen + revDelay + len(ir[0])
+		limit = outLen
+	}
+
+	// 入力の終わり: 尾を出し切って、ミックスを最後まで進める
+	var wg sync.WaitGroup
+	if needD {
+		wg.Add(1)
+		go func() { defer wg.Done(); dproc.Flush() }()
+	}
+	if needR {
+		wg.Add(1)
+		go func() { defer wg.Done(); rproc.Flush() }()
+	}
+	wg.Wait()
+	var ferr error
+	if needD {
+		ferr = dtee.flush(dproc.out)
+	}
+	if ferr == nil && needR {
+		ferr = rtee.flush(rproc.out)
+	}
+	if ferr == nil {
+		ferr = mx.drain(limit)
+	}
+	if ferr == nil {
+		ferr = srcErr()
+	}
+	if ferr == nil && mx.pos != outLen {
+		ferr = fmt.Errorf("render: ミックスが %d フレームのはずが %d フレームでした", outLen, mx.pos)
+	}
+	if ferr != nil {
+		return abort(ferr)
 	}
 	var series *analysis.Series
 	if an != nil {
 		if series, err = an.Finish(ctx); err != nil {
-			mw.Abort()
-			return nil, err
+			return abort(err)
 		}
 	}
+
+	// 計算した段をキャッシュに登録する(マスターの前に。中断されても、計算した段は次のプレビューで使える)
 	mixSp, err := mw.Commit(spoolMeta{SongLen: songLen})
 	if err != nil {
-		return nil, err
+		return abort(err)
 	}
 	defer mixSp.release()
+	writers[0] = nil
+	commit := func(i int, slot, key string, meta spoolMeta) error {
+		w := writers[i]
+		if w == nil {
+			return nil
+		}
+		writers[i] = nil
+		s, err := w.Commit(meta)
+		if err != nil {
+			return err
+		}
+		e.cache.putSpool(slot, key, s)
+		return nil
+	}
+	var cerr error
+	if paw != nil {
+		cerr = commit(1, "pa", paKey, spoolMeta{SongLen: songLen, BusLufs: busMeter.Integrated()})
+	}
+	if cerr == nil {
+		cerr = commit(2, "direct", dKey, spoolMeta{SongLen: songLen})
+	}
+	if cerr == nil {
+		cerr = commit(3, "reverb", rKey, spoolMeta{SongLen: songLen})
+	}
+	if cerr != nil {
+		return abort(cerr)
+	}
+	if series != nil {
+		spec = paSpectrumOut{series: series, meanSquare: paMS.Value()}
+		e.cache.put("paSpectrum", sKey, spec)
+	}
 	prog.report(StageProcess, 1)
 
 	// パス2: マスター(ラウドネス調整 → リミッタ)を掛けて sink へ
@@ -216,10 +485,18 @@ func (e *Engine) RenderTo(ctx context.Context, p project.Project, prog Progress,
 		return nil, err
 	}
 	res := &Result{Frames: outLen, SampleRate: sampleRate, LUFS: outLufs}
-	if series != nil {
-		res.PA = &PASpectrum{Series: series, OffsetDb: levelOffsetFromMS(paMS.Value(), finalMS)}
+	if e.analyzePA && spec.series != nil {
+		res.PA = &PASpectrum{Series: spec.series, OffsetDb: levelOffsetFromMS(spec.meanSquare, finalMS)}
 	}
 	return res, nil
+}
+
+// spoolErr はミックスの入力がスプールの読み出しに失敗していれば、そのエラー。
+func spoolErr(s mixSrc) error {
+	if m, ok := s.(*spoolMixSrc); ok {
+		return m.err
+	}
+	return nil
 }
 
 // runDir は、この実行のスプールを置くディレクトリと、終わったときの後始末を返す。
