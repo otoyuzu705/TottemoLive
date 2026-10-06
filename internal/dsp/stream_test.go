@@ -100,3 +100,53 @@ func TestCompressorStreamMatchesRef(t *testing.T) {
 	NewCompressor(48000, CompParams{Ratio: 4}).Process(nil)
 	NewCompressor(48000, CompParams{Ratio: 4}).Process([][]float32{{}, {}})
 }
+
+func TestLoudnessMeterMatchesRef(t *testing.T) {
+	const sr = 48000
+	rng := rand.New(rand.NewSource(13))
+	loud := func(n int) [][]float32 {
+		x := randSignal(rng, n)
+		y := randSignal(rng, n)
+		for i := range x { // 音量が時間で変わる(ゲートが効く)
+			g := float32(0.05 + 0.4*float64((i/9000)%5)/4)
+			x[i] *= g
+			y[i] *= g * 0.7
+		}
+		return [][]float32{x, y}
+	}
+	lengths := []int{0, 1, 4799, 4800*4 - 1, 4800 * 4, 19200, 19201, 10 * sr}
+	for _, n := range lengths {
+		for _, kind := range []string{"noise", "silence", "mono"} {
+			var buf [][]float32
+			switch kind {
+			case "noise":
+				buf = loud(n)
+			case "silence":
+				buf = [][]float32{make([]float32, n), make([]float32, n)}
+			case "mono":
+				buf = loud(n)[:1]
+			}
+			want := refIntegratedLUFS(buf, sr)
+			if got := IntegratedLUFS(buf, sr); got != want {
+				t.Errorf("n=%d %s: IntegratedLUFS %v want %v", n, kind, got, want)
+			}
+			for _, size := range []int{1, 7, 4800, 4801, 8192, 20000, 0} {
+				if size == 1 && n > 30000 {
+					continue
+				}
+				m := NewLoudnessMeter(sr, len(buf))
+				for _, r := range chunkRanges(n, size) {
+					part := make([][]float32, len(buf))
+					for c := range buf {
+						part[c] = buf[c][r[0]:r[1]]
+					}
+					m.Write(part)
+					m.Integrated() // 途中で測っても状態を壊さない
+				}
+				if got := m.Integrated(); got != want {
+					t.Errorf("n=%d %s chunk=%d: %v want %v", n, kind, size, got, want)
+				}
+			}
+		}
+	}
+}
