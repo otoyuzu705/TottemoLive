@@ -61,7 +61,7 @@ func newTestApp(t *testing.T) (*App, *events, project.Project) {
 		"-i", "sine=frequency=330:sample_rate=44100:duration=3", src).CombinedOutput(); err != nil {
 		t.Fatalf("ffmpeg: %v %s", err, out)
 	}
-	a := NewApp()
+	a := newAppAt(t.TempDir(), t.TempDir())
 	t.Cleanup(func() { a.shutdown(context.Background()) })
 	a.ctx = context.Background()
 	a.presets.UserDir = t.TempDir()
@@ -238,7 +238,7 @@ func TestSoundPresetsViaApp(t *testing.T) {
 }
 
 func TestProgressEmitterThrottles(t *testing.T) {
-	a := NewApp()
+	a := newAppAt(t.TempDir(), t.TempDir())
 	ev := &events{}
 	a.emit = ev.emit
 	prog := a.progressEmitter("j")

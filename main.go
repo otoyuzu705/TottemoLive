@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"log"
+	"net/http"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -24,7 +25,7 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: frontendAssets,
 			// /preview/{id}.wav はGo側の一時ファイルのWAVを返す(Rangeリクエスト対応)
-			Handler: app.store,
+			Handler: http.HandlerFunc(app.serveAssets),
 		},
 		DragAndDrop:      &options.DragAndDrop{EnableFileDrop: true},
 		BackgroundColour: &options.RGBA{R: 24, G: 26, B: 31, A: 1},

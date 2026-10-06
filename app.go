@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"tottemolive/internal/project"
 	"tottemolive/internal/render"
 	"tottemolive/internal/separate"
+	"tottemolive/internal/settings"
 	"tottemolive/internal/venue"
 )
 
@@ -31,9 +33,17 @@ type App struct {
 	presets *project.PresetStore
 	stemDir string // ステム分離の結果のキャッシュ
 
-	mu      sync.Mutex
-	nextSrc int
-	sources map[string]string // 音源ID → パス(GetPeaks 用)
+	// 設定(キャッシュを使うか・置き場所)。変更は setMu で直列にする。
+	// cfgMu は engine / store の差し替えを守る: プレビュー系のジョブは実行中ずっと読み側(RLock)を持ち、
+	// 設定の適用は書き側(Lock)で、実行中のプレビュー系ジョブがすべて終わってから差し替える。
+	settingsPath string
+	setMu        sync.Mutex
+	cfgMu        sync.RWMutex
+
+	mu       sync.Mutex
+	settings settings.Settings // mu で守る。現在有効な設定
+	nextSrc  int
+	sources  map[string]string // 音源ID → パス(GetPeaks 用)
 }
 
 // ユーザーデータ(プリセット・キャッシュ)を置くフォルダ名。legacyAppDir はプロジェクト名を変える前の名前。
@@ -69,23 +79,67 @@ func NewApp() *App {
 	// 旧名(livebin)の時期に保存したプリセットとキャッシュを、新しい名前のフォルダへ引き継ぐ
 	migrateDir(filepath.Join(userDir, legacyAppDir, "presets"), filepath.Join(userDir, appDir, "presets"))
 	migrateDir(filepath.Join(cacheDir, legacyAppDir, "stems"), filepath.Join(cacheDir, appDir, "stems"))
-	return &App{
-		stemDir: filepath.Join(cacheDir, appDir, "stems"),
-		engine:  render.NewEngine(),
-		jobs:    render.NewJobs(),
-		store:   render.NewStore(3),
-		presets: &project.PresetStore{UserDir: filepath.Join(userDir, appDir, "presets"), Shipped: assets.ShippedPresets()},
-		sources: map[string]string{},
-		ctx:     context.Background(),
-		emit:    func(string, any) {},
+	return newAppAt(userDir, cacheDir)
+}
+
+// newAppAt は userDir(設定・プリセット)と cacheDir(ステム分離の結果)の下にユーザーデータを置くアプリを作る(テストで差し替える)。
+func newAppAt(userDir, cacheDir string) *App {
+	settingsPath := filepath.Join(userDir, appDir, "settings.json")
+	cfg := settings.Load(settingsPath)
+	// 保存した置き場所が使えない(外付けドライブが無いなど)ときは、このセッションだけ既定の場所で起動する
+	// (ファイルは書き換えない。設定ダイアログで選び直せる)
+	if v, err := settings.Validate(cfg); err == nil {
+		cfg = v
+	} else {
+		cfg.CacheDir = ""
 	}
+	return &App{
+		stemDir:      filepath.Join(cacheDir, appDir, "stems"),
+		engine:       render.NewEngineWith(engineConfig(cfg)),
+		jobs:         render.NewJobs(),
+		store:        render.NewStoreIn(previewKeep, cfg.CacheDir),
+		presets:      &project.PresetStore{UserDir: filepath.Join(userDir, appDir, "presets"), Shipped: assets.ShippedPresets()},
+		settingsPath: settingsPath,
+		settings:     cfg,
+		sources:      map[string]string{},
+		ctx:          context.Background(),
+		emit:         func(string, any) {},
+	}
+}
+
+// previewKeep はプレビューのWAVを保持する件数(現在のプレビュー・原音・次のプレビュー)。
+const previewKeep = 3
+
+func engineConfig(s settings.Settings) render.EngineConfig {
+	return render.EngineConfig{CacheEnabled: s.CacheEnabled, Dir: s.CacheDir}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.emit = func(event string, data any) { runtime.EventsEmit(ctx, event, data) }
-	// 異常終了などで残った古い一時ファイル(プレビュー・レンダリングの途中のもの)を掃除する
-	go render.CleanStaleTemp(24 * time.Hour)
+	// 異常終了などで残った古い一時ファイル(プレビュー・レンダリングの途中のもの)を掃除する。
+	// 設定した置き場所と、OS の一時フォルダ(置き場所を変える前に残ったもの)の両方を見る
+	dir := a.currentSettings().CacheDir
+	go func() {
+		render.CleanStaleTempIn(dir, 24*time.Hour)
+		if dir != "" {
+			render.CleanStaleTemp(24 * time.Hour)
+		}
+	}()
+}
+
+// serveAssets は /preview/{id}.wav などを、現在のプレビューのストアから配信する(設定で置き場所を変えると、ストアは差し替わる)。
+func (a *App) serveAssets(w http.ResponseWriter, r *http.Request) {
+	a.cfgMu.RLock()
+	st := a.store
+	a.cfgMu.RUnlock()
+	st.ServeHTTP(w, r)
+}
+
+func (a *App) currentSettings() settings.Settings {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.settings
 }
 
 // shutdown はアプリの終了時に、プレビューの一時ファイル(段のキャッシュ・配信中のWAV)を消す。
@@ -329,6 +383,8 @@ type PreviewResult struct {
 // PA出力の帯域レベルのURL(/preview/{id}.bands)を返す。段ごとのキャッシュを使う。
 // 新しい要求が来ると進行中のプレビューは中断され、中断された呼び出しは URL が空の結果とnilを返す。
 func (a *App) RenderPreview(p project.Project) (PreviewResult, error) {
+	a.cfgMu.RLock() // 設定の適用(engine・store の差し替え)を、この呼び出しが終わるまで待たせる
+	defer a.cfgMu.RUnlock()
 	_, ctx, done := a.jobs.Begin(a.ctx, "preview")
 	defer done()
 	// WAVは、曲全体をメモリに持たず、できた分から一時ファイルへ書く
@@ -375,6 +431,8 @@ func (a *App) RenderPreviewWindow(p project.Project, startSec float64, supersede
 	if supersede {
 		a.jobs.CancelKind("preview")
 	}
+	a.cfgMu.RLock()
+	defer a.cfgMu.RUnlock()
 	_, ctx, done := a.jobs.Begin(a.ctx, "previewWindow")
 	defer done()
 	w, err := a.engine.PreviewWindow(ctx, p, startSec)
@@ -393,6 +451,8 @@ func (a *App) RenderPreviewWindow(p project.Project, startSec float64, supersede
 
 // RenderOriginal は曲全体の原音(A/B比較用)のURLを返す。ラウドネスはプレビューと同じ目標にそろえる。
 func (a *App) RenderOriginal(p project.Project) (string, error) {
+	a.cfgMu.RLock()
+	defer a.cfgMu.RUnlock()
 	_, ctx, done := a.jobs.Begin(a.ctx, "original")
 	defer done()
 	w := a.store.NewWAV()
@@ -415,9 +475,11 @@ func (a *App) StartExport(p project.Project, outPath string) (string, error) {
 	}
 	id, ctx, done := a.jobs.Begin(a.ctx, "")
 	p = p.Clone()
+	// 書き出しは設定の変更では中断しない。使い捨てのスプールの置き場所は、開始時の設定で決まる(次の書き出しから新しい設定)
+	tempDir := a.currentSettings().CacheDir
 	go func() {
 		defer done()
-		err := render.Export(ctx, p, outPath, a.progressEmitter(id))
+		err := render.ExportIn(ctx, tempDir, p, outPath, a.progressEmitter(id))
 		switch {
 		case errors.Is(err, context.Canceled):
 			os.Remove(outPath) // 書きかけを残さない
@@ -451,4 +513,117 @@ func (a *App) progressEmitter(jobID string) render.Progress {
 			a.emit("render:progress", ProgressEvent{JobID: jobID, Stage: stage, Ratio: ratio})
 		}
 	}
+}
+
+// --- 設定(ディスクキャッシュ) ---
+
+// GetSettings は現在有効な設定を返す。
+func (a *App) GetSettings() settings.Settings { return a.currentSettings() }
+
+// SetSettings は設定を検証して保存し、実行中のアプリに反映する。
+// 検証(置き場所が絶対パスで、作成でき、書き込めること)か保存に失敗したときは、何も変えずにエラーを返す。
+//
+// 反映: キャッシュの有効・無効か置き場所が変わるときだけ、プレビューのエンジンを作り直す(古いほうは Close して
+// スプールとディレクトリを消す)。置き場所が変わるときは、プレビューのWAVのストアも新しい場所に作り直す
+// (再生中のプレビューのURLは404になる。フロントは settings:applied を受けて、プレビューを作り直す)。
+// 実行中のプレビュー系のジョブ(曲全体・先行プレビュー・原音)は中断して、終わるのを待ってから差し替える。
+// 書き出しのジョブは中断しない(自分専用の一時ディレクトリを使っているので影響されず、次の書き出しから新しい設定になる)。
+func (a *App) SetSettings(s settings.Settings) error {
+	a.setMu.Lock()
+	defer a.setMu.Unlock()
+	s, err := settings.Validate(s)
+	if err != nil {
+		return err
+	}
+	cur := a.currentSettings()
+	if s == cur {
+		return nil
+	}
+	if err := settings.Save(a.settingsPath, s); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.settings = s
+	a.mu.Unlock()
+	dirChanged := s.CacheDir != cur.CacheDir
+	if dirChanged || s.CacheEnabled != cur.CacheEnabled {
+		a.applyCacheSettings(s, dirChanged)
+		a.emit("settings:applied", s)
+	}
+	return nil
+}
+
+// applyCacheSettings は、実行中のプレビュー系のジョブを止めて、エンジン(と、置き場所が変わったときはストア)を作り直す。
+func (a *App) applyCacheSettings(s settings.Settings, dirChanged bool) {
+	// 書き側のロックを待つ間、読み側(プレビュー系のジョブ)を中断し続ける。待ち始めた後は新しい読み側は入れないので、
+	// 中断の対象は、すでに走っているジョブだけで、いずれ終わる
+	stop, exited := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(exited)
+		t := time.NewTicker(20 * time.Millisecond)
+		defer t.Stop()
+		for {
+			for _, kind := range []string{"preview", "previewWindow", "original"} {
+				a.jobs.CancelKind(kind)
+			}
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+			}
+		}
+	}()
+	a.cfgMu.Lock()
+	// ロックの後は、新しいジョブは始まらない。中断の呼び出しが、ロックを放した後に始まる新しいジョブに当たらないよう、終わりを待つ
+	close(stop)
+	<-exited
+	oldEngine, oldStore := a.engine, a.store
+	a.engine = render.NewEngineWith(engineConfig(s))
+	if dirChanged {
+		a.store = render.NewStoreIn(previewKeep, s.CacheDir)
+	}
+	a.cfgMu.Unlock()
+	oldEngine.Close()
+	if dirChanged {
+		oldStore.Close()
+	}
+}
+
+// CacheInfo はキャッシュの現在の置き場所と容量。
+type CacheInfo struct {
+	// Dir は実際に使っている置き場所(設定が空なら OS の一時フォルダ)。
+	Dir     string `json:"dir"`
+	Enabled bool   `json:"enabled"`
+	// UsedBytes はキャッシュ(段のスプール)が使っているディスク容量。
+	UsedBytes int64 `json:"usedBytes"`
+	// FreeBytes は置き場所のボリュームの空き容量。FreeKnown が false(取得できない OS・場所)のときは 0 で、不明。
+	FreeBytes int64 `json:"freeBytes"`
+	FreeKnown bool  `json:"freeKnown"`
+}
+
+// GetCacheInfo は現在のキャッシュの置き場所・使用量・空き容量を返す。
+func (a *App) GetCacheInfo() CacheInfo {
+	cur := a.currentSettings()
+	a.cfgMu.RLock()
+	used := a.engine.CacheBytes()
+	a.cfgMu.RUnlock()
+	info := CacheInfo{Dir: cur.EffectiveDir(), Enabled: cur.CacheEnabled, UsedBytes: used}
+	info.FreeBytes, info.FreeKnown = settings.FreeBytes(info.Dir)
+	return info
+}
+
+// ClearCache は、保持しているキャッシュ(段のスプール・測定値)を今すぐ全部捨てる。
+// 再生中のプレビューのWAVは消さない。実行中の処理は、終わるまで自分が使っているファイルを持ち続ける。
+func (a *App) ClearCache() error {
+	a.cfgMu.RLock()
+	defer a.cfgMu.RUnlock()
+	a.engine.ClearCache()
+	return nil
+}
+
+// PickCacheDir はキャッシュの置き場所のフォルダを選ぶ。キャンセルは空文字。
+func (a *App) PickCacheDir() (string, error) {
+	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "キャッシュの置き場所を選択", DefaultDirectory: a.currentSettings().EffectiveDir(),
+	})
 }
