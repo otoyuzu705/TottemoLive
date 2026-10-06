@@ -29,3 +29,24 @@ func parallelFor(n, minPer int, f func(lo, hi int)) {
 	f(0, n/w)
 	wg.Wait()
 }
+
+// parallelDo は f(0) ... f(n-1) を並行に呼んで、全部終わるまで待つ(f(0) は呼び出し元のゴルーチンで呼ぶ)。
+// n が1以下なら直列。f は互いに独立で、状態を共有しないこと。ゴルーチンは呼び出しごとに作って終わる。
+func parallelDo(n int, f func(w int)) {
+	if n <= 1 {
+		if n == 1 {
+			f(0)
+		}
+		return
+	}
+	var wg sync.WaitGroup
+	for w := 1; w < n; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f(w)
+		}()
+	}
+	f(0)
+	wg.Wait()
+}

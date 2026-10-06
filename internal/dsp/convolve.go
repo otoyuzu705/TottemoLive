@@ -2,6 +2,7 @@ package dsp
 
 import (
 	"context"
+	"runtime"
 
 	"gonum.org/v1/gonum/dsp/fourier"
 )
@@ -43,10 +44,14 @@ func partitionSize(irLen int) int {
 	return b
 }
 
-// ConvolvePair は同じ入力 x を2つのIR(左右の耳など)で畳み込む。IRが両方とも短いときは、
-// 入力のFFTを1回にまとめる(別々に呼ぶより約25%速い)。長いときは2本を並行に処理する。
+// ConvolvePair は同じ入力 x を2つのIR(左右の耳など)で畳み込む。IRが両方とも短いとき、または
+// 両方とも長くて分割サイズが同じときは、入力のFFT(長いときは周波数領域遅延線ごと)を1つにまとめる。
+// それ以外(長さの混在など)は2本を並行に処理する。
 func ConvolvePair(ctx context.Context, x, irA, irB []float32) ([]float32, []float32, error) {
-	if len(x) > 0 && len(irA) > 0 && len(irB) > 0 && len(irA) <= shortIRMax && len(irB) <= shortIRMax {
+	shared := len(irA) > 0 && len(irB) > 0 &&
+		((len(irA) <= shortIRMax && len(irB) <= shortIRMax) ||
+			(len(irA) > shortIRMax && len(irB) > shortIRMax && partitionSize(len(irA)) == partitionSize(len(irB))))
+	if len(x) > 0 && shared {
 		out, err := runStream(ctx, NewStreamConvolver(irA, irB), x, [][]float32{irA, irB})
 		if err != nil {
 			return nil, nil, err
@@ -92,12 +97,17 @@ func runStream(ctx context.Context, c *StreamConvolver, x []float32, irs [][]flo
 }
 
 // StreamConvolver は、入力を区切って順に与えながら、1つまたは複数のIRとの線形畳み込みを求める(overlap-save)。
-// 結果は、入力全体を一度に畳み込んだ場合と、区切り方に依らずビット単位で一致する
+// 結果は、入力全体を一度に畳み込んだ場合と、区切り方・並列度に依らずビット単位で一致する
 // (ブロックの分け方は、曲頭からの絶対位置だけで決まる)。
 //
-// 全IRが shortIRMax 以下なら、入力のFFTを共有して1回のFFTで処理する(短IR用。FFT長 shortFFTSize、
-// 1回に N-L+1 サンプルを出す。L は最長のIR長)。そうでなければIRごとに、IR長から決めた分割サイズの
-// 周波数領域遅延線で処理する(IRが短いものは、そのIRだけの短IR用)。
+// 構成は次の3通り。
+//   - 全IRが shortIRMax 以下: 入力のFFTを共有して1回のFFTで処理する(短IR用。FFT長 shortFFTSize、
+//     1回に N-L+1 サンプルを出す。L は最長のIR長)
+//   - 全IRが長く、分割サイズが同じ(会場IRの左右など): IR長から決めた分割サイズの周波数領域遅延線を
+//     IR間で共有して処理する(遅延線が持つのは入力のスペクトルだけで、IRのスペクトルは別々に持つ)
+//   - それ以外(長さの混在・分割サイズの違い): IRごとに別々の畳み込み器(subs)に分ける
+//
+// 1回の Process に入るブロックは互いに独立なので、ブロックを並列に処理する(結果は並列度に依らない)。
 type StreamConvolver struct {
 	irLens []int
 	n, b   int       // FFT長、1回のブロックで出す(確定する)サンプル数
@@ -105,28 +115,42 @@ type StreamConvolver struct {
 	off    int
 	blocks int // 処理したブロック数
 	fed    int // 受け取った入力のフレーム数
-	block  func(frame []float32) [][]float32
-	out    [][]float32
-	subs   []*StreamConvolver // IRごとに分ける場合
+	// run は、frames の先頭から b ずつずらした k 個のフレーム(それぞれ n 点)を処理し、
+	// ブロック j の出力(b 点)を IR r について dst[r][j*b : (j+1)*b] に書く。frames は読むだけ。
+	run  func(frames []float32, k int, dst [][]float32)
+	out  [][]float32
+	subs []*StreamConvolver // IRごとに分ける場合
 }
 
 // NewStreamConvolver は irs との畳み込みを流し処理する畳み込み器を返す。IRは空でないこと。
 func NewStreamConvolver(irs ...[]float32) *StreamConvolver {
-	allShort := true
+	allShort, allLong := true, true
 	for _, ir := range irs {
 		if len(ir) > shortIRMax {
 			allShort = false
+		} else {
+			allLong = false
 		}
 	}
 	if allShort {
 		return newShortStream(irs)
+	}
+	if allLong {
+		B := partitionSize(len(irs[0]))
+		same := true
+		for _, ir := range irs {
+			same = same && partitionSize(len(ir)) == B
+		}
+		if same {
+			return newPartitionedStream(irs, B)
+		}
 	}
 	c := &StreamConvolver{irLens: irLens(irs), out: make([][]float32, len(irs))}
 	for _, ir := range irs {
 		if len(ir) <= shortIRMax {
 			c.subs = append(c.subs, newShortStream([][]float32{ir}))
 		} else {
-			c.subs = append(c.subs, newPartitionedStream(ir, partitionSize(len(ir))))
+			c.subs = append(c.subs, newPartitionedStream([][]float32{ir}, partitionSize(len(ir))))
 		}
 	}
 	return c
@@ -165,93 +189,170 @@ func newShortStream(irs [][]float32) *StreamConvolver {
 	Y := make([]complex128, nc)
 	y := make([]float64, N)
 	scale := 1.0 / float64(N)
-	res := make([][]float32, len(irs))
-	for k := range res {
-		res[k] = make([]float32, B)
-	}
 	return &StreamConvolver{
 		irLens: irLens(irs), n: N, b: B, buf: make([]float32, L-1), out: make([][]float32, len(irs)),
-		block: func(frame []float32) [][]float32 {
-			// フレームは x[start-(L-1) .. start-(L-1)+N)。先頭の L-1 点は巡回で汚れるので捨てる
-			for i := 0; i < N; i++ {
-				buf[i] = float64(frame[i])
-			}
-			fft.Coefficients(X, buf)
-			for k := range irs {
-				for i := range Y {
-					Y[i] = X[i] * H[k][i]
+		run: func(frames []float32, k int, dst [][]float32) {
+			for j := 0; j < k; j++ {
+				// フレームは x[start-(L-1) .. start-(L-1)+N)。先頭の L-1 点は巡回で汚れるので捨てる
+				frame := frames[j*B : j*B+N]
+				for i := 0; i < N; i++ {
+					buf[i] = float64(frame[i])
 				}
-				fft.Sequence(y, Y)
-				for i := 0; i < B; i++ {
-					res[k][i] = float32(y[L-1+i] * scale)
+				fft.Coefficients(X, buf)
+				for r := range irs {
+					for i := range Y {
+						Y[i] = X[i] * H[r][i]
+					}
+					fft.Sequence(y, Y)
+					out := dst[r][j*B : (j+1)*B]
+					for i := range out {
+						out[i] = float32(y[L-1+i] * scale)
+					}
 				}
 			}
-			return res
 		},
 	}
 }
 
-// newPartitionedStream は IR を B 点ずつに分け、FFT長 2B の周波数領域遅延線で畳み込む(長いIR用)。
-func newPartitionedStream(ir []float32, B int) *StreamConvolver {
+// partWorker は、分割畳み込みのブロックを処理するワーカーごとの作業領域。gonum の FFT は作業領域を
+// 書き換えるのでゴルーチン安全ではなく、ワーカーごとに別のインスタンスを持つ(回転因子は決定的なので、
+// インスタンスが違っても結果は同じ)。
+type partWorker struct {
+	fft *fourier.FFT
+	buf []float64
+	y   []float64
+	acc []complex128
+}
+
+// partConv は、IR を B 点ずつに分け、FFT長 2B の周波数領域遅延線(FDL)で畳み込む(長いIR用)。
+// FDL は入力のスペクトルだけを持つので、同じ分割サイズの複数のIR(左右の耳など)で1つを共有し、
+// IRごとに持つのはIRのスペクトル H だけ。
+type partConv struct {
+	B, N, nc int
+	H        [][][]complex128 // [IR][分割 p]
+	// fdl[q] は、直前までの入力の、q+1 個前のブロックのスペクトル(q=0 が直前のブロック)。初期値はゼロ
+	fdl     [][]complex128
+	spare   [][]complex128 // 今回の入力ブロックのスペクトルに使う配列(使い回す。必要になってから増やす)
+	order   [][]complex128 // FDL を進めるときの付け替え用の作業(ポインタだけ)
+	spare2  [][]complex128
+	workers []*partWorker
+	scale   float64
+}
+
+// newPartitionedStream は irs(分割サイズ B は共通)を FDL を共有して畳み込む畳み込み器を返す。
+func newPartitionedStream(irs [][]float32, B int) *StreamConvolver {
 	N := 2 * B
 	nc := N/2 + 1
 	fft := fourier.NewFFT(N)
-
-	// IRをB点ずつに分けてスペクトルにしておく
-	parts := (len(ir) + B - 1) / B
-	H := make([][]complex128, parts)
+	pc := &partConv{B: B, N: N, nc: nc, scale: 1.0 / float64(N), H: make([][][]complex128, len(irs))}
 	buf := make([]float64, N)
-	for p := 0; p < parts; p++ {
-		for i := range buf {
-			buf[i] = 0
-		}
-		for i := 0; i < B && p*B+i < len(ir); i++ {
-			buf[i] = float64(ir[p*B+i])
-		}
-		H[p] = fft.Coefficients(make([]complex128, nc), buf)
-	}
-
-	// 周波数領域の遅延線(新しい入力スペクトルほど小さい添字)
-	fdl := make([][]complex128, parts)
-	for i := range fdl {
-		fdl[i] = make([]complex128, nc)
-	}
-	acc := make([]complex128, nc)
-	y := make([]float64, N)
-	scale := 1.0 / float64(N)
-	res := [][]float32{make([]float32, B)}
-	return &StreamConvolver{
-		irLens: []int{len(ir)}, n: N, b: B, buf: make([]float32, B), out: make([][]float32, 1),
-		block: func(frame []float32) [][]float32 {
-			// 入力フレーム = [前のブロック, 今のブロック]
-			for i := 0; i < N; i++ {
-				buf[i] = float64(frame[i])
+	maxParts := 0
+	for k, ir := range irs {
+		// IRをB点ずつに分けてスペクトルにしておく
+		parts := (len(ir) + B - 1) / B
+		maxParts = max(maxParts, parts)
+		pc.H[k] = make([][]complex128, parts)
+		for p := 0; p < parts; p++ {
+			for i := range buf {
+				buf[i] = 0
 			}
-			// 最古のスペクトルの配列を再利用して新しいスペクトルを入れる
-			oldest := fdl[parts-1]
-			copy(fdl[1:], fdl[:parts-1])
-			fdl[0] = fft.Coefficients(oldest, buf)
+			for i := 0; i < B && p*B+i < len(ir); i++ {
+				buf[i] = float64(ir[p*B+i])
+			}
+			pc.H[k][p] = fft.Coefficients(make([]complex128, nc), buf)
+		}
+	}
+	pc.fdl = make([][]complex128, maxParts)
+	for q := range pc.fdl {
+		pc.fdl[q] = make([]complex128, nc)
+	}
+	return &StreamConvolver{
+		irLens: irLens(irs), n: N, b: B, buf: make([]float32, B), out: make([][]float32, len(irs)),
+		run: pc.run,
+	}
+}
 
+// ensureWorkers は、ワーカー 0..n-1 の作業領域を(無ければ)作る。ゴルーチンを起こす前に呼ぶ。
+func (p *partConv) ensureWorkers(n int) {
+	for len(p.workers) < n {
+		p.workers = append(p.workers, &partWorker{
+			fft: fourier.NewFFT(p.N), buf: make([]float64, p.N), y: make([]float64, p.N), acc: make([]complex128, p.nc),
+		})
+	}
+}
+
+// run は k 個のブロックを処理する(StreamConvolver.run を見よ)。
+//
+//	(1) 全ブロックの順方向FFT(ブロックごとに独立 → 並列)
+//	(2) ブロック × IR ごとの FDL 積和と逆FFT(独立 → 並列)。ブロック j の積和が使うのは「ブロック j-q のスペクトル」
+//	    (q=0 が最新)で、j-q が負なら前回までの FDL の fdl[q-j-1]。積和は q=0.. の順(元の逐次処理と同じ順)
+//	(3) FDL を k ブロックぶん進める(配列の付け替えだけで、データは動かさない)
+func (p *partConv) run(frames []float32, k int, dst [][]float32) {
+	B, N, nc, nIR := p.B, p.N, p.nc, len(p.H)
+	for len(p.spare) < k {
+		p.spare = append(p.spare, make([]complex128, nc))
+	}
+	X := p.spare[:k]
+
+	nw := min(runtime.GOMAXPROCS(0), k)
+	p.ensureWorkers(nw)
+	parallelDo(nw, func(w int) {
+		wk := p.workers[w]
+		for j := k * w / nw; j < k*(w+1)/nw; j++ {
+			fr := frames[j*B : j*B+N]
+			for i := range wk.buf {
+				wk.buf[i] = float64(fr[i])
+			}
+			wk.fft.Coefficients(X[j], wk.buf)
+		}
+	})
+
+	tasks := k * nIR
+	nw = min(runtime.GOMAXPROCS(0), tasks)
+	p.ensureWorkers(nw)
+	parallelDo(nw, func(w int) {
+		wk := p.workers[w]
+		for t := tasks * w / nw; t < tasks*(w+1)/nw; t++ {
+			j, r := t/nIR, t%nIR
+			acc := wk.acc
 			for i := range acc {
 				acc[i] = 0
 			}
-			for p := 0; p < parts; p++ {
-				a, h := fdl[p], H[p]
+			for q, h := range p.H[r] {
+				var a []complex128
+				if j-q >= 0 {
+					a = X[j-q]
+				} else {
+					a = p.fdl[q-j-1]
+				}
 				for i := 0; i < nc; i++ {
 					acc[i] += a[i] * h[i]
 				}
 			}
-			fft.Sequence(y, acc)
-			for i := 0; i < B; i++ {
-				res[0][i] = float32(y[B+i] * scale)
+			wk.fft.Sequence(wk.y, acc)
+			out := dst[r][j*B : (j+1)*B]
+			for i := range out {
+				out[i] = float32(wk.y[B+i] * p.scale)
 			}
-			return res
-		},
+		}
+	})
+
+	// FDL を進める: 新しい順に X[k-1] ... X[0]、続いて古い FDL。先頭の len(fdl) 個が新しい FDL、残りは使い回しの配列
+	order := p.order[:0]
+	for j := k - 1; j >= 0; j-- {
+		order = append(order, X[j])
 	}
+	order = append(order, p.fdl...)
+	copy(p.fdl, order[:len(p.fdl)])
+	spare2 := append(p.spare2[:0], order[len(p.fdl):]...)
+	spare2 = append(spare2, p.spare[k:]...)
+	p.spare, p.spare2 = spare2, p.spare
+	p.order = order
 }
 
 // Process は入力 x の続きを与え、新しく確定した出力をIRごとに返す。戻り値は次の Process / Flush まで有効。
-// 全IRが短いとき(またはIRが1つのとき)、確定する出力の長さはIRによらず同じ。
+// 確定する出力の長さは、全IRで同じ(全IRが短い・全IRが長くて分割サイズが同じ・IRが1つ のとき。
+// それ以外で IRごとの畳み込み器(subs)に分かれるときは、分割サイズの違いでIRごとに違うことがある)。
 func (c *StreamConvolver) Process(x []float32) [][]float32 {
 	if c.subs != nil {
 		for k, s := range c.subs {
@@ -259,22 +360,31 @@ func (c *StreamConvolver) Process(x []float32) [][]float32 {
 		}
 		return c.out
 	}
-	for k := range c.out {
-		c.out[k] = c.out[k][:0]
-	}
 	c.buf = append(c.buf, x...)
 	c.fed += len(x)
-	for len(c.buf)-c.off >= c.n {
-		ys := c.block(c.buf[c.off : c.off+c.n])
-		for k := range c.out {
-			c.out[k] = append(c.out[k], ys[k]...)
-		}
-		c.off += c.b
-		c.blocks++
+	k := 0
+	if avail := len(c.buf) - c.off; avail >= c.n {
+		k = (avail-c.n)/c.b + 1
 	}
+	c.runBlocks(k)
+	c.off += k * c.b
+	c.blocks += k
 	c.buf = c.buf[:copy(c.buf, c.buf[c.off:])]
 	c.off = 0
 	return c.out
+}
+
+// runBlocks は c.buf[c.off:] から k ブロックを処理し、c.out に(各IR k*b 点)出す。
+func (c *StreamConvolver) runBlocks(k int) {
+	for r := range c.out {
+		if cap(c.out[r]) < k*c.b {
+			c.out[r] = make([]float32, k*c.b)
+		}
+		c.out[r] = c.out[r][:k*c.b]
+	}
+	if k > 0 {
+		c.run(c.buf[c.off:], k, c.out)
+	}
 }
 
 // Flush は入力の終わりを知らせ、残りの出力(尾)を返す。戻り値は Process と同じく次の呼び出しまで有効。
@@ -297,19 +407,17 @@ func (c *StreamConvolver) Flush() [][]float32 {
 		maxOut = max(maxOut, c.fed+l-1)
 	}
 	total := (maxOut + c.b - 1) / c.b
-	for c.blocks < total {
-		for len(c.buf)-c.off < c.n {
-			c.buf = append(c.buf, 0)
+	if kk := total - c.blocks; kk > 0 {
+		// 残りのブロックは、入力の終わりの先をゼロとして処理する
+		if need := c.off + (kk-1)*c.b + c.n; len(c.buf) < need {
+			c.buf = append(c.buf, make([]float32, need-len(c.buf))...)
 		}
-		ys := c.block(c.buf[c.off : c.off+c.n])
+		c.runBlocks(kk)
 		start := c.blocks * c.b
-		for k := range c.out {
-			if take := min(c.b, c.fed+c.irLens[k]-1-start); take > 0 {
-				c.out[k] = append(c.out[k], ys[k][:take]...)
-			}
+		for r := range c.out {
+			c.out[r] = c.out[r][:max(0, min(kk*c.b, c.fed+c.irLens[r]-1-start))]
 		}
-		c.off += c.b
-		c.blocks++
+		c.blocks += kk
 	}
 	c.buf = c.buf[:0]
 	c.off = 0

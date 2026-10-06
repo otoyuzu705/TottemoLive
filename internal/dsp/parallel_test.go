@@ -1,6 +1,7 @@
 package dsp
 
 import (
+	"context"
 	"math"
 	"math/rand"
 	"runtime"
@@ -101,4 +102,80 @@ func TestSaturateParallelMatchesRef(t *testing.T) {
 		}
 	}
 	Saturate(nil, 0.5)
+}
+
+// 長いIR(FDLを共有・ブロック並列)は、並列度・チャンク分け・入力の長さ・IRの組み合わせに依らず、
+// 参照実装(元の逐次処理)とビット単位で一致する。
+func TestStreamConvolverLongParallelMatchesRef(t *testing.T) {
+	rng := rand.New(rand.NewSource(61))
+	ctx := context.Background()
+	cases := [][]int{
+		{5000},                   // 1本
+		{100000},                 // 会場IR相当 1本
+		{100000, 100000},         // 左右(FDL共有)
+		{100000, 90000},          // 分割数が違う(分割サイズは同じ、FDL共有)
+		{513, 5000},              // 分割サイズが同じ最小
+		{5000, 100000},           // 分割サイズが違う(別々)
+		{200, 100000},            // 短いIRと長いIRの混在(別々)
+		{130000, 130000, 120000}, // 3本
+	}
+	for _, lens := range cases {
+		irs := make([][]float32, len(lens))
+		for i, l := range lens {
+			irs[i] = randSignal(rng, l)
+		}
+		B := partitionSize(lens[0])
+		for _, n := range []int{0, 1, B - 1, B, 2*B + 1, 100001, 400000} {
+			x := randSignal(rng, n)
+			want := make([][]float32, len(irs))
+			for i, ir := range irs {
+				w, err := refConvolve(ctx, x, ir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want[i] = w
+			}
+			for _, procs := range parallelProcs {
+				withProcs(t, procs, func() {
+					for _, size := range []int{1000, B - 1, B, B + 1, 65536, 200000} {
+						if size < 1 || (size == 1000 && n > 150000) {
+							continue
+						}
+						outs := streamAll(NewStreamConvolver(irs...), x, size, len(irs))
+						for i := range irs {
+							if j, ok := equalF32(outs[i], want[i]); !ok {
+								t.Fatalf("lens=%v n=%d procs=%d chunk=%d ir%d: differs at %d (len %d vs %d)", lens, n, procs, size, i, j, len(outs[i]), len(want[i]))
+							}
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// ConvolvePair の長いIR(FDL共有)の経路が、IRごとに別々に畳み込んだ結果と一致する。
+func TestConvolvePairLongMatchesRef(t *testing.T) {
+	rng := rand.New(rand.NewSource(62))
+	ctx := context.Background()
+	for _, c := range [][2]int{{100000, 100000}, {100000, 90000}, {5000, 100000}, {200, 100000}} {
+		a, b := randSignal(rng, c[0]), randSignal(rng, c[1])
+		for _, n := range []int{1, 70000, 250000} {
+			x := randSignal(rng, n)
+			wa, wb, err := refConvolvePair(ctx, x, a, b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ga, gb, err := ConvolvePair(ctx, x, a, b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if i, ok := equalF32(ga, wa); !ok {
+				t.Fatalf("%v n=%d A differs at %d", c, n, i)
+			}
+			if i, ok := equalF32(gb, wb); !ok {
+				t.Fatalf("%v n=%d B differs at %d", c, n, i)
+			}
+		}
+	}
 }

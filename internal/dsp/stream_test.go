@@ -154,7 +154,7 @@ func TestLoudnessMeterMatchesRef(t *testing.T) {
 
 // convolvePartitionedAll は分割サイズ B を指定して、全体を分割畳み込みする(テスト用)。
 func convolvePartitionedAll(ctx context.Context, x, ir []float32, B int) ([]float32, error) {
-	out, err := runStream(ctx, newPartitionedStream(ir, B), x, [][]float32{ir})
+	out, err := runStream(ctx, newPartitionedStream([][]float32{ir}, B), x, [][]float32{ir})
 	if err != nil {
 		return nil, err
 	}

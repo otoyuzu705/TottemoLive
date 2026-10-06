@@ -94,9 +94,10 @@ func radiatedMono(bus [][]float32, active bool, sub project.Sub) []float32 {
 
 // reverbProc はスピーカーから放射された音(radiatedProc)を会場IR(左右)で畳み込む処理器。
 // 残響は距離減衰を掛ける前の信号で駆動する(拡散音場のレベルは距離に依らないため)。
+// 左右のIRは長さ・分割サイズが同じなので、1つの畳み込み器(周波数領域遅延線を共有、ブロックは並列)で処理する。
 type reverbProc struct {
 	rad  *radiatedProc
-	conv [2]*dsp.StreamConvolver
+	conv *dsp.StreamConvolver
 	out  *frameQueue
 }
 
@@ -108,7 +109,7 @@ func newReverbProc(pp *prepared, ir [][]float32) *reverbProc {
 	}
 	return &reverbProc{
 		rad:  newRadiatedProc(active, sub),
-		conv: [2]*dsp.StreamConvolver{dsp.NewStreamConvolver(ir[0]), dsp.NewStreamConvolver(ir[1])},
+		conv: dsp.NewStreamConvolver(ir[0], ir[1]),
 		out:  newFrameQueue(2),
 	}
 }
@@ -117,32 +118,12 @@ func newReverbProc(pp *prepared, ir [][]float32) *reverbProc {
 // 呼び出し側(パス1)は、次のチャンクの先読みを別の面に書いて Push と重ねるので、この不変条件が前提になる。
 func (r *reverbProc) Push(bus [][]float32) {
 	mono := r.rad.Process(bus)
-	var y [2][]float32
-	var wg sync.WaitGroup
-	for c := range r.conv {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			y[c] = r.conv[c].Process(mono)[0]
-		}()
-	}
-	wg.Wait()
-	r.out.push([][]float32{y[0], y[1]})
+	r.out.push(r.conv.Process(mono))
 }
 
 // Flush は入力の終わりを知らせ、残響の尾を出す。
 func (r *reverbProc) Flush() {
-	var y [2][]float32
-	var wg sync.WaitGroup
-	for c := range r.conv {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			y[c] = r.conv[c].Flush()[0]
-		}()
-	}
-	wg.Wait()
-	r.out.push([][]float32{y[0], y[1]})
+	r.out.push(r.conv.Flush())
 	r.out.end()
 }
 
