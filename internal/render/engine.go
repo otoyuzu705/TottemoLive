@@ -23,6 +23,38 @@ type Engine struct {
 	// analyzePA が true のとき、結果にPA出力の帯域レベル(スペクトラム表示用)を含める。プレビュー用だけ。
 	analyzePA bool
 	decodes   atomic.Int64 // デコードした回数(テスト用)
+
+	dirMu sync.Mutex
+	dir   string // 段の出力(スプール)を置く一時ディレクトリ。最初に要るときに作る
+}
+
+// tempDir はスプールを置く一時ディレクトリ(Engine ごと。最初に呼ばれたときに作る)。
+func (e *Engine) tempDir() (string, error) {
+	e.dirMu.Lock()
+	defer e.dirMu.Unlock()
+	if e.dir == "" {
+		d, err := os.MkdirTemp("", renderTempPrefix+"*")
+		if err != nil {
+			return "", fmt.Errorf("一時フォルダを作れません: %w", err)
+		}
+		e.dir = d
+	}
+	return e.dir, nil
+}
+
+// Close はキャッシュの出力(スプール)を捨て、一時ディレクトリを消す。アプリの終了時に呼ぶ。
+func (e *Engine) Close() error {
+	if e.cache != nil {
+		e.cache.closeAll()
+	}
+	e.dirMu.Lock()
+	defer e.dirMu.Unlock()
+	if e.dir == "" {
+		return nil
+	}
+	err := os.RemoveAll(e.dir)
+	e.dir = ""
+	return err
 }
 
 // NewEngine はキャッシュ付きのエンジンを返す。
