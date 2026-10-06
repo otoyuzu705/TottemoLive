@@ -382,6 +382,8 @@ func (p *partConv) run(frames []float32, k int, dst [][]float32) {
 // Process は入力 x の続きを与え、新しく確定した出力をIRごとに返す。戻り値は次の Process / Flush まで有効。
 // 確定する出力の長さは、全IRで同じ(全IRが短い・全IRが長くて分割サイズが同じ・IRが1つ のとき。
 // それ以外で IRごとの畳み込み器(subs)に分かれるときは、分割サイズの違いでIRごとに違うことがある)。
+// 1回に渡す入力は数万フレーム程度にすること。ブロックの入力スペクトルの置き場が、1回に処理するブロック数に比例して
+// 増える(曲全体を一度に渡すと、メモリが曲の長さに比例する)。
 func (c *StreamConvolver) Process(x []float32) [][]float32 {
 	if c.subs != nil {
 		for k, s := range c.subs {

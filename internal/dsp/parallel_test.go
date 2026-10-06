@@ -125,7 +125,12 @@ func TestStreamConvolverLongParallelMatchesRef(t *testing.T) {
 			irs[i] = randSignal(rng, l)
 		}
 		B := partitionSize(lens[0])
-		for _, n := range []int{0, 1, B - 1, B, 2*B + 1, 100001, 400000} {
+		ns := []int{0, 1, B - 1, B, 2*B + 1, 100001, 400000}
+		procsList, sizes := parallelProcs, []int{1000, B - 1, B, B + 1, 65536, 200000}
+		if testing.Short() { // -race のCIなど。ブロック境界・並列度の代表だけに絞る
+			ns, procsList, sizes = []int{0, 1, B - 1, B, 2*B + 1, 100001}, []int{1, 3}, []int{B - 1, 65536}
+		}
+		for _, n := range ns {
 			x := randSignal(rng, n)
 			want := make([][]float32, len(irs))
 			for i, ir := range irs {
@@ -135,9 +140,9 @@ func TestStreamConvolverLongParallelMatchesRef(t *testing.T) {
 				}
 				want[i] = w
 			}
-			for _, procs := range parallelProcs {
+			for _, procs := range procsList {
 				withProcs(t, procs, func() {
-					for _, size := range []int{1000, B - 1, B, B + 1, 65536, 200000} {
+					for _, size := range sizes {
 						if size < 1 || (size == 1000 && n > 150000) {
 							continue
 						}
