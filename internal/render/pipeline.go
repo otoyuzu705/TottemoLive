@@ -33,10 +33,15 @@ func (e *Engine) renderMem(ctx context.Context, p project.Project, prog Progress
 	return res, nil
 }
 
-// Export はレンダリングして24bit WAVに書き出す。
+// Export はレンダリングして24bit WAVに書き出す(使い捨てのスプールは OS の一時ディレクトリに置く)。
 func Export(ctx context.Context, p project.Project, outPath string, prog Progress) error {
+	return ExportIn(ctx, "", p, outPath, prog)
+}
+
+// ExportIn は Export の、使い捨てのスプールを置く場所(tempDir。空なら OS の一時ディレクトリ)を指定できる版。
+func ExportIn(ctx context.Context, tempDir string, p project.Project, outPath string, prog Progress) error {
 	sink := &wavSink{ctx: ctx, path: outPath}
-	if _, err := (&Engine{}).RenderTo(ctx, p, prog, sink); err != nil {
+	if _, err := (&Engine{baseDir: tempDir}).RenderTo(ctx, p, prog, sink); err != nil {
 		sink.abort()
 		return err
 	}
@@ -500,15 +505,16 @@ func spoolErr(s mixSrc) error {
 }
 
 // runDir は、この実行のスプールを置くディレクトリと、終わったときの後始末を返す。
-// キャッシュなしのエンジン(書き出し)は、実行ごとに作って消す。キャッシュ付きは Engine の一時ディレクトリを使う。
+// キャッシュなしのエンジン(書き出し・設定でキャッシュを切ったプレビュー)は、実行ごとに作って消す(置き場所は e.baseDir)。
+// キャッシュ付きは Engine の一時ディレクトリを使う。
 func (e *Engine) runDir() (string, func(), error) {
 	if e.cache != nil {
 		d, err := e.tempDir()
 		return d, func() {}, err
 	}
-	d, err := os.MkdirTemp("", renderTempPrefix+"*")
+	d, err := mkTempDir(e.baseDir, renderTempPrefix)
 	if err != nil {
-		return "", nil, fmt.Errorf("一時フォルダを作れません: %w", err)
+		return "", nil, err
 	}
 	return d, func() { os.RemoveAll(d) }, nil
 }

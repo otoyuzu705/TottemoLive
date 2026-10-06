@@ -257,6 +257,19 @@ func (c *cache) dropLocked(slot string) {
 	}
 }
 
+// spoolBytes は保持しているスプールのファイルサイズの合計。
+func (c *cache) spoolBytes() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var n int64
+	for _, e := range c.slots {
+		if s, ok := e.val.(*spool); ok {
+			n += int64(s.frames) * int64(s.ch) * 4
+		}
+	}
+	return n
+}
+
 // closeAll はすべてのエントリを外す(スプールの参照を返す)。
 func (c *cache) closeAll() {
 	c.mu.Lock()
@@ -274,8 +287,15 @@ const (
 
 // CleanStaleTemp は、異常終了などで残った一時ディレクトリ(tottemolive-render-* / tottemolive-preview-*)のうち、
 // maxAge より長く更新されていないものを消す。起動時に呼ぶ。
-func CleanStaleTemp(maxAge time.Duration) {
-	entries, err := os.ReadDir(os.TempDir())
+func CleanStaleTemp(maxAge time.Duration) { CleanStaleTempIn("", maxAge) }
+
+// CleanStaleTempIn は CleanStaleTemp の、掃除する場所(base。空なら OS の一時ディレクトリ)を指定できる版。
+// キャッシュの置き場所の設定を変えても、前の置き場所に残ったものを掃除できるよう、起動時は両方に対して呼ぶ。
+func CleanStaleTempIn(base string, maxAge time.Duration) {
+	if base == "" {
+		base = os.TempDir()
+	}
+	entries, err := os.ReadDir(base)
 	if err != nil {
 		return
 	}
@@ -285,7 +305,7 @@ func CleanStaleTemp(maxAge time.Duration) {
 			continue
 		}
 		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > maxAge {
-			os.RemoveAll(filepath.Join(os.TempDir(), name))
+			os.RemoveAll(filepath.Join(base, name))
 		}
 	}
 }

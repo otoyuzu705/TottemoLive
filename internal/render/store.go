@@ -23,7 +23,8 @@ import (
 type Store struct {
 	mu    sync.Mutex
 	seq   int
-	dir   string // 最初に要るときに作る
+	base  string // 一時ディレクトリを作る場所(空なら OS の一時ディレクトリ)
+	dir   string // base の下。最初に要るときに作る
 	items map[string]*item
 	order []string
 	keep  int
@@ -37,8 +38,11 @@ type item struct {
 }
 
 // NewStore は最新 keep 件を保持するストアを返す(古いものから捨てる)。
-func NewStore(keep int) *Store {
-	return &Store{items: map[string]*item{}, keep: max(keep, 1)}
+func NewStore(keep int) *Store { return NewStoreIn(keep, "") }
+
+// NewStoreIn は NewStore の、一時ディレクトリを作る場所(base。空なら OS の一時ディレクトリ)を指定できる版。
+func NewStoreIn(keep int, base string) *Store {
+	return &Store{items: map[string]*item{}, keep: max(keep, 1), base: base}
 }
 
 // tempDir は一時ファイルを置くディレクトリ(最初に呼ばれたときに作る)。
@@ -50,9 +54,9 @@ func (s *Store) tempDir() (string, error) {
 
 func (s *Store) tempDirLocked() (string, error) {
 	if s.dir == "" {
-		d, err := os.MkdirTemp("", previewTempPrefix+"*")
+		d, err := mkTempDir(s.base, previewTempPrefix)
 		if err != nil {
-			return "", fmt.Errorf("一時フォルダを作れません: %w", err)
+			return "", err
 		}
 		s.dir = d
 	}

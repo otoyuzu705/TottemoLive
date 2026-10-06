@@ -28,8 +28,11 @@ type Engine struct {
 	// openSource は音源のデコーダーを開く関数(nil なら audio.OpenDecoder。テストで合成音源を差し込む)
 	openSource func(ctx context.Context, path string, sr int, progress func(float64)) (frameReader, error)
 
+	// baseDir は一時ディレクトリを作る場所(空なら OS の一時ディレクトリ)。キャッシュの置き場所の設定
+	baseDir string
+
 	dirMu sync.Mutex
-	dir   string // 段の出力(スプール)を置く一時ディレクトリ。最初に要るときに作る
+	dir   string // 段の出力(スプール)を置く一時ディレクトリ(baseDir の下)。最初に要るときに作る
 }
 
 // defaultChunk は流し処理の1回のフレーム数。
@@ -47,9 +50,9 @@ func (e *Engine) tempDir() (string, error) {
 	e.dirMu.Lock()
 	defer e.dirMu.Unlock()
 	if e.dir == "" {
-		d, err := os.MkdirTemp("", renderTempPrefix+"*")
+		d, err := mkTempDir(e.baseDir, renderTempPrefix)
 		if err != nil {
-			return "", fmt.Errorf("一時フォルダを作れません: %w", err)
+			return "", err
 		}
 		e.dir = d
 	}
@@ -71,8 +74,61 @@ func (e *Engine) Close() error {
 	return err
 }
 
-// NewEngine はキャッシュ付きのエンジンを返す。
-func NewEngine() *Engine { return &Engine{cache: newCache(), analyzePA: true} }
+// NewEngine はキャッシュ付きのエンジンを返す(一時ファイルは OS の一時ディレクトリ)。
+func NewEngine() *Engine { return NewEngineWith(EngineConfig{CacheEnabled: true}) }
+
+// EngineConfig はプレビュー用のエンジンの設定(アプリの設定から決まる)。
+type EngineConfig struct {
+	// CacheEnabled が false なら、段の出力もメモリ上の測定値(inputLevel・paSpectrum)も一切保持せず、
+	// プレビューは毎回全段を計算し直す。処理に必須の使い捨てのスプール(ミックス・先行プレビューのPA段)は作るが、
+	// 処理が終わると消える。
+	CacheEnabled bool
+	// Dir は一時ディレクトリを作る場所。空なら OS の一時ディレクトリ。
+	Dir string
+}
+
+// NewEngineWith は設定に従うプレビュー用のエンジンを返す(PA出力の帯域レベルの解析は常に行う)。
+func NewEngineWith(cfg EngineConfig) *Engine {
+	e := &Engine{analyzePA: true, baseDir: cfg.Dir}
+	if cfg.CacheEnabled {
+		e.cache = newCache()
+	}
+	return e
+}
+
+// mkTempDir は base(空なら OS の一時ディレクトリ)の下に、prefix で始まる一時ディレクトリを作る。
+// base が無ければ作る(設定した置き場所が、後から消されていても動くように)。
+func mkTempDir(base, prefix string) (string, error) {
+	if base != "" {
+		if err := os.MkdirAll(base, 0o755); err != nil {
+			return "", fmt.Errorf("一時フォルダを作れません: %w", err)
+		}
+	}
+	d, err := os.MkdirTemp(base, prefix+"*")
+	if err != nil {
+		return "", fmt.Errorf("一時フォルダを作れません: %w", err)
+	}
+	return d, nil
+}
+
+// CacheEnabled はキャッシュを使うエンジンか。
+func (e *Engine) CacheEnabled() bool { return e.cache != nil }
+
+// ClearCache は保持している段の出力(スプール)と測定値をすべて捨てる(使用中の実行は、自分の参照が
+// 残っているので、終わるまでファイルは消えない)。
+func (e *Engine) ClearCache() {
+	if e.cache != nil {
+		e.cache.closeAll()
+	}
+}
+
+// CacheBytes はキャッシュが使っているディスク容量(段のスプールの合計バイト数)。
+func (e *Engine) CacheBytes() int64 {
+	if e.cache == nil {
+		return 0
+	}
+	return e.cache.spoolBytes()
+}
 
 // Preview は曲全体を、書き出しと同じ処理でレンダリングする(段ごとのキャッシュを使う)。
 // 音量も曲全体で測るので、書き出しと同じになる。結果の音声をメモリに持つので、テストと短い素材用。
