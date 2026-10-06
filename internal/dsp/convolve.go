@@ -164,6 +164,24 @@ func irLens(irs [][]float32) []int {
 	return out
 }
 
+// shortWorker は、短いIR用のブロックを処理するワーカーごとの作業領域(FFTインスタンスはワーカーごと。
+// partWorker と同じ理由)。
+type shortWorker struct {
+	fft  *fourier.FFT
+	buf  []float64
+	y    []float64
+	X, Y []complex128
+}
+
+// shortConv は短いIR用(入力のFFTを共有)。overlap-save のブロックは完全に独立なので、
+// 1回の Process に入るブロック(65536フレームで16〜19個)をワーカーに分けて並列に処理する。
+type shortConv struct {
+	N, L, B, nc int
+	H           [][]complex128 // [IR]
+	scale       float64
+	workers     []*shortWorker
+}
+
 // newShortStream は短いIR用(入力のFFTを共有)。
 func newShortStream(irs [][]float32) *StreamConvolver {
 	L := 0
@@ -175,7 +193,7 @@ func newShortStream(irs [][]float32) *StreamConvolver {
 	fft := fourier.NewFFT(N)
 	nc := N/2 + 1
 	buf := make([]float64, N)
-	H := make([][]complex128, len(irs))
+	sc := &shortConv{N: N, L: L, B: B, nc: nc, scale: 1.0 / float64(N), H: make([][]complex128, len(irs))}
 	for k, ir := range irs {
 		for i := range buf {
 			buf[i] = 0
@@ -183,35 +201,46 @@ func newShortStream(irs [][]float32) *StreamConvolver {
 		for i := range ir {
 			buf[i] = float64(ir[i])
 		}
-		H[k] = fft.Coefficients(make([]complex128, nc), buf)
+		sc.H[k] = fft.Coefficients(make([]complex128, nc), buf)
 	}
-	X := make([]complex128, nc)
-	Y := make([]complex128, nc)
-	y := make([]float64, N)
-	scale := 1.0 / float64(N)
 	return &StreamConvolver{
 		irLens: irLens(irs), n: N, b: B, buf: make([]float32, L-1), out: make([][]float32, len(irs)),
-		run: func(frames []float32, k int, dst [][]float32) {
-			for j := 0; j < k; j++ {
-				// フレームは x[start-(L-1) .. start-(L-1)+N)。先頭の L-1 点は巡回で汚れるので捨てる
-				frame := frames[j*B : j*B+N]
-				for i := 0; i < N; i++ {
-					buf[i] = float64(frame[i])
+		run: sc.run,
+	}
+}
+
+// run は k 個のブロックを処理する(StreamConvolver.run を見よ)。フレームは読み取り専用で、
+// ブロック j の出力は dst の j*B の位置へ書くので、ブロックごとに独立に並列化できる。
+func (s *shortConv) run(frames []float32, k int, dst [][]float32) {
+	nw := min(runtime.GOMAXPROCS(0), k)
+	for len(s.workers) < nw {
+		s.workers = append(s.workers, &shortWorker{
+			fft: fourier.NewFFT(s.N), buf: make([]float64, s.N), y: make([]float64, s.N),
+			X: make([]complex128, s.nc), Y: make([]complex128, s.nc),
+		})
+	}
+	N, L, B := s.N, s.L, s.B
+	parallelDo(nw, func(w int) {
+		wk := s.workers[w]
+		for j := k * w / nw; j < k*(w+1)/nw; j++ {
+			// フレームは x[start-(L-1) .. start-(L-1)+N)。先頭の L-1 点は巡回で汚れるので捨てる
+			frame := frames[j*B : j*B+N]
+			for i := 0; i < N; i++ {
+				wk.buf[i] = float64(frame[i])
+			}
+			wk.fft.Coefficients(wk.X, wk.buf)
+			for r, h := range s.H {
+				for i := range wk.Y {
+					wk.Y[i] = wk.X[i] * h[i]
 				}
-				fft.Coefficients(X, buf)
-				for r := range irs {
-					for i := range Y {
-						Y[i] = X[i] * H[r][i]
-					}
-					fft.Sequence(y, Y)
-					out := dst[r][j*B : (j+1)*B]
-					for i := range out {
-						out[i] = float32(y[L-1+i] * scale)
-					}
+				wk.fft.Sequence(wk.y, wk.Y)
+				out := dst[r][j*B : (j+1)*B]
+				for i := range out {
+					out[i] = float32(wk.y[L-1+i] * s.scale)
 				}
 			}
-		},
-	}
+		}
+	})
 }
 
 // partWorker は、分割畳み込みのブロックを処理するワーカーごとの作業領域。gonum の FFT は作業領域を

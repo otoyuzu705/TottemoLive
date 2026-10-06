@@ -179,3 +179,59 @@ func TestConvolvePairLongMatchesRef(t *testing.T) {
 		}
 	}
 }
+
+// 短いIR(HRIR。ブロック並列)は、並列度・チャンク分け・入力の長さ・IRの組み合わせに依らず、
+// 参照実装とビット単位で一致する(1回の Process に入るブロック数が 0・1・多数 のどれでも)。
+func TestStreamConvolverShortParallelMatchesRef(t *testing.T) {
+	rng := rand.New(rand.NewSource(63))
+	ctx := context.Background()
+	for _, lens := range [][]int{{1}, {192}, {400}, {512}, {192, 192}, {400, 512}, {1, 512}} {
+		irs := make([][]float32, len(lens))
+		L := 0
+		for i, l := range lens {
+			irs[i] = randSignal(rng, l)
+			L = max(L, l)
+		}
+		B := shortFFTSize - L + 1
+		for _, n := range []int{0, 1, B - 1, B, B + 1, 3*B + 7, 65536, 200003} {
+			x := randSignal(rng, n)
+			want := make([][]float32, len(irs))
+			for i, ir := range irs {
+				w, err := refConvolve(ctx, x, ir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want[i] = w
+			}
+			if n == 0 {
+				want = make([][]float32, len(irs))
+				for i := range want {
+					want[i] = []float32{}
+				}
+			}
+			// 組(2本)の参照は、共有FFTの短IR用(refConvolveShort)と一致するはず
+			if len(irs) > 1 && n > 0 { // 入力が0なら出力は空
+				ws, err := refConvolveShort(ctx, x, irs...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want = ws
+			}
+			for _, procs := range parallelProcs {
+				withProcs(t, procs, func() {
+					for _, size := range []int{1000, B - 1, B, B + 1, 65536, 200000} {
+						if size < 1 || (size == 1000 && n > 70000) {
+							continue
+						}
+						outs := streamAll(NewStreamConvolver(irs...), x, size, len(irs))
+						for i := range irs {
+							if j, ok := equalF32(outs[i], want[i]); !ok {
+								t.Fatalf("lens=%v n=%d procs=%d chunk=%d ir%d: differs at %d (len %d vs %d)", lens, n, procs, size, i, j, len(outs[i]), len(want[i]))
+							}
+						}
+					}
+				})
+			}
+		}
+	}
+}
