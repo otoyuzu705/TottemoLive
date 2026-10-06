@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -250,16 +252,30 @@ func TestClearCacheViaApp(t *testing.T) {
 	}
 }
 
-// 実行中のプレビューがあっても、設定を変えられる。プレビューは中断され(エラーにならず)、次のプレビューは新しい設定で動く。
+// 実行中のプレビューがあっても、設定を変えられる。プレビューは中断され(エラーにならず URL は空)、
+// 次のプレビューは新しい設定で動く。
 func TestSetSettingsDuringPreview(t *testing.T) {
 	a, _, p := newTestApp(t)
-	p, _ = a.ApplyVenue(p, "dome")
-	done := make(chan error, 1)
+	// プレビューがジョブとして走っている間(ジョブ登録後)に止めておき、設定の適用による中断で再開させる
+	started := make(chan struct{})
+	a.previewHook = func(ctx context.Context) {
+		close(started)
+		<-ctx.Done()
+	}
+	type result struct {
+		r   PreviewResult
+		err error
+	}
+	done := make(chan result, 1)
 	go func() {
-		_, err := a.RenderPreview(p)
-		done <- err
+		r, err := a.RenderPreview(p)
+		done <- result{r, err}
 	}()
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-started:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the preview did not start")
+	}
 	dir := t.TempDir()
 	applied := make(chan error, 1)
 	go func() { applied <- a.SetSettings(settings.Settings{CacheEnabled: false, CacheDir: dir}) }()
@@ -271,9 +287,11 @@ func TestSetSettingsDuringPreview(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("SetSettings did not finish while a preview was running")
 	}
-	if err := <-done; err != nil {
-		t.Errorf("the interrupted preview returned an error: %v", err)
+	res := <-done
+	if res.err != nil || res.r.URL != "" {
+		t.Errorf("the interrupted preview should return an empty result and no error: %+v %v", res.r, res.err)
 	}
+	a.previewHook = nil
 	if r, err := a.RenderPreview(p); err != nil || r.URL == "" {
 		t.Fatalf("preview after the change: %+v %v", r, err)
 	}
@@ -282,25 +300,103 @@ func TestSetSettingsDuringPreview(t *testing.T) {
 	}
 }
 
+// blockingEmit は、最初の進捗イベントで止まる emit(書き出しを、任意の時点で止めておくためのテスト用の仕組み)。
+// 止まったら blocked を閉じ、release が閉じられるまで返らない。
+func blockingEmit(ev *events) (emit func(string, any), blocked, release chan struct{}) {
+	blocked, release = make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	emit = func(name string, data any) {
+		if name == "render:progress" {
+			once.Do(func() {
+				close(blocked)
+				<-release
+			})
+		}
+		ev.emit(name, data)
+	}
+	return emit, blocked, release
+}
+
 // 書き出しは設定の変更で中断されず、使い捨てのスプールは開始時の置き場所に作られて、終われば消える。
+// 書き出しを進捗の通知で止めておき、設定の変更(置き場所・キャッシュの切り替え)が終わった後に再開して、完走することを確かめる。
 func TestExportUsesCacheDirAndSurvivesSettingsChange(t *testing.T) {
 	a, ev, p := newTestApp(t)
 	dir := t.TempDir()
 	if err := a.SetSettings(settings.Settings{CacheEnabled: true, CacheDir: dir}); err != nil {
 		t.Fatal(err)
 	}
+	emit, blocked, release := blockingEmit(ev)
+	a.emit = emit
 	out := filepath.Join(t.TempDir(), "out.wav")
-	if _, err := a.StartExport(p, out); err != nil {
+	id, err := a.StartExport(p, out)
+	if err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case <-blocked:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the export did not start")
+	}
+	// 書き出しは進行中(止まっている)。この間に設定を変えても、待たされず、書き出しは中断されない
+	if n := len(entryNames(t, dir)); n == 0 {
+		t.Error("the running export has no scratch dir in the place it started with")
 	}
 	if err := a.SetSettings(settings.Settings{CacheEnabled: false, CacheDir: t.TempDir()}); err != nil {
 		t.Fatal(err)
 	}
-	ev.wait(t, "render:done")
+	for _, e := range ev.snapshot() {
+		if e.name == "render:error" {
+			t.Fatalf("the export was interrupted by the settings change: %+v", e.data)
+		}
+	}
+	close(release)
+	done := ev.wait(t, "render:done").(DoneEvent)
+	if done.JobID != id {
+		t.Errorf("done: %+v", done)
+	}
 	if fi, err := os.Stat(out); err != nil || fi.Size() < 1000 {
 		t.Errorf("export output: %v %v", fi, err)
 	}
 	if n := countFilesWithPrefix(dir, "tottemolive-render-"); n != 0 {
 		t.Errorf("%d scratch files left in the old dir", n)
+	}
+	if names := entryNames(t, filepath.Dir(out)); len(names) != 1 {
+		t.Errorf("files in the output dir: %v", names)
+	}
+}
+
+// 終了時(shutdown)は、実行中の書き出しを中断する。既存の出力ファイルは元のまま残り、一時ファイルも残らない。
+func TestShutdownCancelsExportAndKeepsExistingFile(t *testing.T) {
+	a, ev, p := newTestApp(t)
+	emit, blocked, release := blockingEmit(ev)
+	a.emit = emit
+	outDir := t.TempDir()
+	out := filepath.Join(outDir, "out.wav")
+	os.WriteFile(out, []byte("old contents"), 0o644)
+	if _, err := a.StartExport(p, out); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blocked:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the export did not start")
+	}
+	finished := make(chan struct{})
+	go func() { a.shutdown(context.Background()); close(finished) }()
+	time.Sleep(200 * time.Millisecond) // shutdown が最初にジョブを中断するのを待つ(書き出しは止まっているので、中断を見ない)
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(20 * time.Second):
+		t.Fatal("shutdown did not finish")
+	}
+	if e := ev.wait(t, "render:error").(ErrorEvent); e.Message != "中断しました" {
+		t.Errorf("error event: %+v", e)
+	}
+	if b, _ := os.ReadFile(out); string(b) != "old contents" {
+		t.Errorf("the existing output was modified: %q", b)
+	}
+	if names := entryNames(t, outDir); len(names) != 1 {
+		t.Errorf("files left in the output dir: %v", names)
 	}
 }

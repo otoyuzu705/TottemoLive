@@ -379,3 +379,16 @@ func TestShutdownRemovesTempFiles(t *testing.T) {
 		}
 	}
 }
+
+// snapshot は、これまでに出たイベントの写し。
+func (e *events) snapshot() []struct {
+	name string
+	data any
+} {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]struct {
+		name string
+		data any
+	}(nil), e.list...)
+}

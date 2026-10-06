@@ -45,10 +45,19 @@ func (e *Engine) chunkSize() int {
 	return defaultChunk
 }
 
-// tempDir はスプールを置く一時ディレクトリ(Engine ごと。最初に呼ばれたときに作る)。
+// tempDir はスプールを置く一時ディレクトリ(Engine ごと)を返す。呼ばれるたびに存在を確かめ、
+// 無ければ(使っている最中に他から消された)作り直す。あわせて、他のインスタンスの掃除に消されないよう、
+// 目印の更新時刻を更新する(touchWorkdir)。
 func (e *Engine) tempDir() (string, error) {
 	e.dirMu.Lock()
 	defer e.dirMu.Unlock()
+	if e.dir != "" {
+		if fi, err := os.Stat(e.dir); err != nil || !fi.IsDir() {
+			e.dir = ""
+		} else {
+			touchWorkdir(e.dir)
+		}
+	}
 	if e.dir == "" {
 		d, err := mkTempDir(e.baseDir, renderTempPrefix)
 		if err != nil {
@@ -108,6 +117,7 @@ func mkTempDir(base, prefix string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("一時フォルダを作れません: %w", err)
 	}
+	touchWorkdir(d)
 	return d, nil
 }
 

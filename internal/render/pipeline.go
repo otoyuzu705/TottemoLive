@@ -7,6 +7,8 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"tottemolive/internal/analysis"
@@ -39,13 +41,51 @@ func Export(ctx context.Context, p project.Project, outPath string, prog Progres
 }
 
 // ExportIn は Export の、使い捨てのスプールを置く場所(tempDir。空なら OS の一時ディレクトリ)を指定できる版。
+//
+// 出力は、同じフォルダの一時名(out.partial-<乱数>.wav)へ書き、最後まで成功したときだけ outPath へ
+// 置き換える(os.Rename。Windows でも既存のファイルを置き換える)。失敗・中断のときは一時ファイルを消し、
+// 既存の outPath には触らない。
 func ExportIn(ctx context.Context, tempDir string, p project.Project, outPath string, prog Progress) error {
-	sink := &wavSink{ctx: ctx, path: outPath}
-	if _, err := (&Engine{baseDir: tempDir}).RenderTo(ctx, p, prog, sink); err != nil {
-		sink.abort()
+	return exportWith(ctx, &Engine{baseDir: tempDir}, p, outPath, prog)
+}
+
+// exportWith は ExportIn の本体(エンジンを差し替えられる。テストで合成音源を使う)。
+func exportWith(ctx context.Context, e *Engine, p project.Project, outPath string, prog Progress) error {
+	partial, err := partialPath(outPath)
+	if err != nil {
 		return err
 	}
-	return sink.close()
+	sink := &wavSink{ctx: ctx, path: partial}
+	if _, err := e.RenderTo(ctx, p, prog, sink); err != nil {
+		sink.abort()
+		os.Remove(partial)
+		return err
+	}
+	if err := sink.close(); err != nil {
+		os.Remove(partial)
+		return err
+	}
+	if err := os.Rename(partial, outPath); err != nil {
+		os.Remove(partial)
+		return fmt.Errorf("書き出し先を置き換えられません: %w", err)
+	}
+	return nil
+}
+
+// partialPath は outPath と同じフォルダに、書き出し途中のファイルの名前(拡張子は outPath と同じ)を決めて、空のファイルを作る。
+func partialPath(outPath string) (string, error) {
+	ext := filepath.Ext(outPath)
+	base := strings.TrimSuffix(filepath.Base(outPath), ext)
+	f, err := os.CreateTemp(filepath.Dir(outPath), base+".partial-*"+ext)
+	if err != nil {
+		return "", fmt.Errorf("書き出し先に書けません: %w", err)
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		os.Remove(name)
+		return "", err
+	}
+	return name, nil
 }
 
 // wavSink は出力を24bit WAVファイルへ流す Sink。
@@ -156,7 +196,30 @@ func (t *queueTee) flush(q *frameQueue) error {
 	return t.w.Write(buf)
 }
 
-// RenderTo はプロジェクト全体を、音源を流しながらレンダリングして sink へ書き出す。
+// RenderTo は renderTo を呼ぶ。キャッシュに当たったスプールのファイルが(他から)消されていて読めなかったときは、
+// そのスプールをキャッシュから外し(errSpoolLost で lost になる)、sink へ書き始める前なら1回だけやり直す
+// (外した段は再計算される)。
+func (e *Engine) RenderTo(ctx context.Context, p project.Project, prog Progress, sink Sink) (*Result, error) {
+	ts := &startTrackSink{Sink: sink}
+	res, err := e.renderTo(ctx, p, prog, ts)
+	if err != nil && errors.Is(err, errSpoolLost) && !ts.started && ctx.Err() == nil {
+		return e.renderTo(ctx, p, prog, ts)
+	}
+	return res, err
+}
+
+// startTrackSink は Sink が書き始めたかを覚える。
+type startTrackSink struct {
+	Sink
+	started bool
+}
+
+func (s *startTrackSink) Start(frames, sampleRate int) error {
+	s.started = true
+	return s.Sink.Start(frames, sampleRate)
+}
+
+// renderTo はプロジェクト全体を、音源を流しながらレンダリングして sink へ書き出す。
 // 曲の長さに依らず、メモリはほぼ一定(段の出力は一時ファイルに置く)。
 //
 // キャッシュ付きのエンジン(プレビュー)は、段ごとの出力(PA・直接音・残響・PA出力の帯域レベル)をキャッシュし、
@@ -165,7 +228,7 @@ func (t *queueTee) flush(q *frameQueue) error {
 //	パス0: PA入力のレベル合わせのために、音源ゲイン後の合計のラウドネスを測る(autoLevel が on で、結果が無いとき)
 //	パス1: バス(音源 → PA、またはPAのスプール)→ 直接音・残響・帯域レベル → ミックスを一時ファイルへ
 //	パス2: マスター(ラウドネス調整 → リミッタ)を掛けて sink へ
-func (e *Engine) RenderTo(ctx context.Context, p project.Project, prog Progress, sink Sink) (*Result, error) {
+func (e *Engine) renderTo(ctx context.Context, p project.Project, prog Progress, sink Sink) (*Result, error) {
 	pp, err := prepare(p)
 	if err != nil {
 		return nil, err
@@ -238,6 +301,14 @@ func (e *Engine) RenderTo(ctx context.Context, p project.Project, prog Progress,
 	var live *liveBus
 	expected := songLen
 	var paw *spoolWriter
+	writers := make([]*spoolWriter, 4) // [0]=ミックス [1]=PA [2]=直接音 [3]=残響。失敗・中断・途中の失敗のときは、書きかけを消す
+	defer func() {
+		for _, w := range writers {
+			if w != nil {
+				w.Abort()
+			}
+		}
+	}()
 	var busMeter *dsp.LoudnessMeter
 	if needBus {
 		if paSp != nil {
@@ -263,6 +334,7 @@ func (e *Engine) RenderTo(ctx context.Context, p project.Project, prog Progress,
 				if paw, err = newSpoolWriter(dir, 2); err != nil {
 					return nil, err
 				}
+				writers[1] = paw
 				busMeter = dsp.NewLoudnessMeter(sampleRate, 2)
 			}
 		}
@@ -280,6 +352,7 @@ func (e *Engine) RenderTo(ctx context.Context, p project.Project, prog Progress,
 			if dw, err = newSpoolWriter(dir, 2); err != nil {
 				return nil, err
 			}
+			writers[2] = dw
 		}
 	} else {
 		m := &spoolMixSrc{s: dSp}
@@ -293,6 +366,7 @@ func (e *Engine) RenderTo(ctx context.Context, p project.Project, prog Progress,
 			if rw, err = newSpoolWriter(dir, 2); err != nil {
 				return nil, err
 			}
+			writers[3] = rw
 		}
 	} else {
 		m := &spoolMixSrc{s: rSp}
@@ -310,7 +384,7 @@ func (e *Engine) RenderTo(ctx context.Context, p project.Project, prog Progress,
 	if err != nil {
 		return nil, err
 	}
-	writers := []*spoolWriter{mw, paw, dw, rw} // 失敗・中断のときは、書きかけを消す
+	writers[0] = mw
 	abort := func(err error) (*Result, error) {
 		for _, w := range writers {
 			if w != nil {

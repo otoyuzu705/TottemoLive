@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,6 +39,37 @@ type spool struct {
 
 	mu   sync.Mutex
 	refs int
+	// lost はファイルが(他から)消されていると分かったときに立てる。キャッシュはこのスプールを使わず、外す。
+	lost atomic.Bool
+}
+
+// errSpoolLost はスプールのファイルが消えていて読めないことを表す。キャッシュに当たった段なら、
+// 外して再計算すれば直るので、RenderTo / PreviewWindow は1回だけやり直す。
+var errSpoolLost = errors.New("render: 一時ファイルが消えています")
+
+// missing はファイルが消えているか(使う前に確かめる。消えていれば lost を立てる)。
+func (s *spool) missing() bool {
+	if s.lost.Load() {
+		return true
+	}
+	if _, err := os.Stat(s.path); errors.Is(err, fs.ErrNotExist) {
+		s.lost.Store(true)
+		return true
+	}
+	return false
+}
+
+// openFile はスプールのファイルを開く。消えていれば lost を立てて errSpoolLost を返す。
+func (s *spool) openFile() (*os.File, error) {
+	f, err := os.Open(s.path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			s.lost.Store(true)
+			return nil, fmt.Errorf("%w: %v", errSpoolLost, err)
+		}
+		return nil, fmt.Errorf("一時ファイルを読めません: %w", err)
+	}
+	return f, nil
 }
 
 // acquire は参照を1つ取る。すでに解放済み(削除済み)なら false。
@@ -75,10 +108,10 @@ func (s *spool) open(from int) (*spoolReader, error) {
 	if !s.acquire() {
 		return nil, errors.New("render: 一時ファイルはすでに解放されています")
 	}
-	f, err := os.Open(s.path)
+	f, err := s.openFile()
 	if err != nil {
 		s.release()
-		return nil, fmt.Errorf("一時ファイルを読めません: %w", err)
+		return nil, err
 	}
 	if from > 0 {
 		if _, err := f.Seek(int64(from)*int64(s.ch)*4, io.SeekStart); err != nil {
@@ -136,9 +169,9 @@ func (s *spool) ReadRange(from, to int) ([][]float32, error) {
 		return nil, errors.New("render: 一時ファイルはすでに解放されています")
 	}
 	defer s.release()
-	f, err := os.Open(s.path)
+	f, err := s.openFile()
 	if err != nil {
-		return nil, fmt.Errorf("一時ファイルを読めません: %w", err)
+		return nil, err
 	}
 	defer f.Close()
 	fb := 4 * s.ch
@@ -218,7 +251,7 @@ func (c *cache) lookupSpool(slot, key string) (*spool, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e, ok := c.slots[slot]; ok {
-		if s, isSpool := e.val.(*spool); isSpool && e.key == key && s.acquire() {
+		if s, isSpool := e.val.(*spool); isSpool && e.key == key && !s.missing() && s.acquire() {
 			st := c.stat[slot]
 			st.Hits++
 			c.stat[slot] = st
@@ -230,7 +263,7 @@ func (c *cache) lookupSpool(slot, key string) (*spool, bool) {
 }
 
 // putSpool は新しく計算したスプールをスロットに登録する。キャッシュが、Commit で得た参照を引き継ぐ。
-// 呼び出し側が使うときは、別に acquire すること。
+// 呼び出し側が使うときは、putSpool の前に acquire すること(登録後に別の実行が置き換えると、消えてしまう)。
 func (c *cache) putSpool(slot, key string, s *spool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -279,18 +312,34 @@ func (c *cache) closeAll() {
 	}
 }
 
-// tempPrefix は一時ディレクトリの名前の頭。
+// 一時ディレクトリの名前の頭。
 const (
 	renderTempPrefix  = "tottemolive-render-"
 	previewTempPrefix = "tottemolive-preview-"
 )
 
-// CleanStaleTemp は、異常終了などで残った一時ディレクトリ(tottemolive-render-* / tottemolive-preview-*)のうち、
-// maxAge より長く更新されていないものを消す。起動時に呼ぶ。
+// staleTempName は掃除の対象になる作業ディレクトリの名前(MkdirTemp の乱数部は数字)。
+// ユーザー指定のフォルダに置かれた、無関係な「tottemolive-render-メモ」などを消さないよう、厳密に照合する。
+var staleTempName = regexp.MustCompile(`^tottemolive-(render|preview)-\d+$`)
+
+// touchWorkdir は作業ディレクトリの更新時刻を現在にする(使っている間の心拍)。実行中のインスタンスは、
+// 作業ディレクトリを使う(tempDir)たびに呼ぶので、別のインスタンスの起動時の掃除(CleanStaleTempIn)が、
+// 使用中のものを「古い」と見て消すことはない。失敗しても処理は続ける。
+func touchWorkdir(dir string) {
+	now := time.Now()
+	_ = os.Chtimes(dir, now, now)
+}
+
+// CleanStaleTemp は、異常終了などで残った一時ディレクトリ(tottemolive-render-<数字> / tottemolive-preview-<数字>)のうち、
+// maxAge より長く使われていないものを消す。起動時に呼ぶ。
 func CleanStaleTemp(maxAge time.Duration) { CleanStaleTempIn("", maxAge) }
 
 // CleanStaleTempIn は CleanStaleTemp の、掃除する場所(base。空なら OS の一時ディレクトリ)を指定できる版。
 // キャッシュの置き場所の設定を変えても、前の置き場所に残ったものを掃除できるよう、起動時は両方に対して呼ぶ。
+//
+// 消す対象は、名前が厳密に tottemolive-(render|preview)-<数字> に一致するディレクトリで、更新時刻が maxAge より古いもの。
+// 更新時刻は、実行中のインスタンスが使うたびに更新する(touchWorkdir)ので、使用中のものは消えない。
+// (目印ファイルは置かない: 作業ディレクトリの中身はスプールだけという前提を保ち、旧版が作ったものも同じ基準で扱える)
 func CleanStaleTempIn(base string, maxAge time.Duration) {
 	if base == "" {
 		base = os.TempDir()
@@ -301,7 +350,7 @@ func CleanStaleTempIn(base string, maxAge time.Duration) {
 	}
 	for _, e := range entries {
 		name := e.Name()
-		if !e.IsDir() || !(strings.HasPrefix(name, renderTempPrefix) || strings.HasPrefix(name, previewTempPrefix)) {
+		if !e.IsDir() || !staleTempName.MatchString(name) {
 			continue
 		}
 		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > maxAge {

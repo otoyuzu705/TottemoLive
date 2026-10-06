@@ -45,14 +45,22 @@ func NewStoreIn(keep int, base string) *Store {
 	return &Store{items: map[string]*item{}, keep: max(keep, 1), base: base}
 }
 
-// tempDir は一時ファイルを置くディレクトリ(最初に呼ばれたときに作る)。
+// tempDir は一時ファイルを置くディレクトリ(無ければ作る)。
 func (s *Store) tempDir() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.tempDirLocked()
 }
 
+// tempDirLocked は一時ディレクトリを返す。呼ばれるたびに存在を確かめ、無ければ作り直す(Engine.tempDir と同じ)。
 func (s *Store) tempDirLocked() (string, error) {
+	if s.dir != "" {
+		if fi, err := os.Stat(s.dir); err != nil || !fi.IsDir() {
+			s.dir = ""
+		} else {
+			touchWorkdir(s.dir)
+		}
+	}
 	if s.dir == "" {
 		d, err := mkTempDir(s.base, previewTempPrefix)
 		if err != nil {

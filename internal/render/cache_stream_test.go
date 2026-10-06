@@ -200,13 +200,17 @@ func TestCancelLeavesNoPartialSpools(t *testing.T) {
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
 	var once2 sync.Once
-	_, err = (&Engine{openSource: synthOpener, chunk: 997}).RenderTo(ctx2, base, func(stage string, ratio float64) {
+	scratch := t.TempDir()
+	_, err = (&Engine{openSource: synthOpener, chunk: 997, baseDir: scratch}).RenderTo(ctx2, base, func(stage string, ratio float64) {
 		if stage == StageEncode && ratio > 0.3 {
 			once2.Do(cancel2)
 		}
 	}, &discardSink{})
 	if err != context.Canceled {
 		t.Fatalf("export cancel: %v", err)
+	}
+	if n := dirEntries(t, scratch); n != 0 {
+		t.Errorf("%d entries remain in the scratch dir after the cancelled export", n)
 	}
 }
 

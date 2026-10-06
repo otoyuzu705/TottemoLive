@@ -39,6 +39,10 @@ type App struct {
 	settingsPath string
 	setMu        sync.Mutex
 	cfgMu        sync.RWMutex
+	exports      sync.WaitGroup // 実行中の書き出しジョブ(終了時に待つ)
+
+	// previewHook は、曲全体のプレビューの実行中(ジョブの登録後・レンダリングの前)に呼ばれるテスト用のフック(通常は nil)。
+	previewHook func(ctx context.Context)
 
 	mu       sync.Mutex
 	settings settings.Settings // mu で守る。現在有効な設定
@@ -142,8 +146,20 @@ func (a *App) currentSettings() settings.Settings {
 	return a.settings
 }
 
-// shutdown はアプリの終了時に、プレビューの一時ファイル(段のキャッシュ・配信中のWAV)を消す。
+// shutdown はアプリの終了時に、実行中のジョブをすべて中断し(書き出し中の ffmpeg も止まり、書きかけの出力は消える)、
+// プレビューの一時ファイル(段のキャッシュ・配信中のWAV)を消す。
+// engine / store は設定の適用(applyCacheSettings)が差し替えるので、cfgMu の書き側のロックを取ってから閉じる
+// (プレビュー系のジョブは、中断されて読み側のロックを放すまで待つ)。
 func (a *App) shutdown(ctx context.Context) {
+	a.jobs.CancelAll()
+	exported := make(chan struct{})
+	go func() { a.exports.Wait(); close(exported) }()
+	select {
+	case <-exported:
+	case <-time.After(10 * time.Second): // 子プロセスが止まらなくても、終了は妨げない
+	}
+	a.cfgMu.Lock()
+	defer a.cfgMu.Unlock()
 	a.engine.Close()
 	a.store.Close()
 }
@@ -387,6 +403,9 @@ func (a *App) RenderPreview(p project.Project) (PreviewResult, error) {
 	defer a.cfgMu.RUnlock()
 	_, ctx, done := a.jobs.Begin(a.ctx, "preview")
 	defer done()
+	if a.previewHook != nil {
+		a.previewHook(ctx)
+	}
 	// WAVは、曲全体をメモリに持たず、できた分から一時ファイルへ書く
 	w := a.store.NewWAV()
 	res, err := a.engine.PreviewTo(ctx, p, nil, w)
@@ -467,7 +486,8 @@ func (a *App) RenderOriginal(p project.Project) (string, error) {
 	return url, err
 }
 
-// StartExport は書き出しジョブを開始してジョブIDを返す。
+// StartExport は書き出しジョブを開始してジョブIDを返す。書き出しは一時名のファイルへ書き、成功したときだけ outPath を置き換える
+// (失敗・中断では既存のファイルに触らず、一時ファイルも残さない)。
 // 進捗は render:progress、完了は render:done、失敗は render:error(中断も render:error)で通知する。
 func (a *App) StartExport(p project.Project, outPath string) (string, error) {
 	if outPath == "" {
@@ -477,15 +497,15 @@ func (a *App) StartExport(p project.Project, outPath string) (string, error) {
 	p = p.Clone()
 	// 書き出しは設定の変更では中断しない。使い捨てのスプールの置き場所は、開始時の設定で決まる(次の書き出しから新しい設定)
 	tempDir := a.currentSettings().CacheDir
+	a.exports.Add(1)
 	go func() {
+		defer a.exports.Done()
 		defer done()
 		err := render.ExportIn(ctx, tempDir, p, outPath, a.progressEmitter(id))
 		switch {
 		case errors.Is(err, context.Canceled):
-			os.Remove(outPath) // 書きかけを残さない
 			a.emit("render:error", ErrorEvent{JobID: id, Message: "中断しました"})
 		case err != nil:
-			os.Remove(outPath)
 			a.emit("render:error", ErrorEvent{JobID: id, Message: err.Error()})
 		default:
 			a.emit("render:done", DoneEvent{JobID: id, Path: outPath})

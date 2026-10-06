@@ -206,20 +206,16 @@ func TestEngineCloseRemovesDir(t *testing.T) {
 	e.Close()
 }
 
+// CleanStaleTemp(OS の一時フォルダが対象)の本体は CleanStaleTempIn。実OSの一時フォルダを掃除しないよう、専用フォルダで確かめる。
 func TestCleanStaleTemp(t *testing.T) {
-	old, err := os.MkdirTemp("", renderTempPrefix+"*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fresh, _ := os.MkdirTemp("", previewTempPrefix+"*")
-	other, _ := os.MkdirTemp("", "unrelated-*")
-	defer os.RemoveAll(fresh)
-	defer os.RemoveAll(other)
-	defer os.RemoveAll(old)
+	base := t.TempDir()
+	old, _ := os.MkdirTemp(base, renderTempPrefix+"*")
+	fresh, _ := os.MkdirTemp(base, previewTempPrefix+"*")
+	other, _ := os.MkdirTemp(base, "unrelated-*")
 	past := time.Now().Add(-48 * time.Hour)
 	os.Chtimes(old, past, past)
 	os.Chtimes(other, past, past)
-	CleanStaleTemp(24 * time.Hour)
+	CleanStaleTempIn(base, 24*time.Hour)
 	if fileExists(old) {
 		t.Error("stale render dir remains")
 	}

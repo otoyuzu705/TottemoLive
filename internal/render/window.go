@@ -44,7 +44,16 @@ func (e *Engine) PreviewWindow(ctx context.Context, p project.Project, startSec 
 }
 
 // previewWindow は PreviewWindow の、窓の長さ(秒)を指定できる版(テスト用に短くする)。
+// PA段のスプールのファイルが消えていたときは、キャッシュから外して1回だけやり直す(PA段は再計算される)。
 func (e *Engine) previewWindow(ctx context.Context, p project.Project, startSec, widthSec float64) (*Window, error) {
+	w, err := e.previewWindowOnce(ctx, p, startSec, widthSec)
+	if err != nil && errors.Is(err, errSpoolLost) && ctx.Err() == nil {
+		return e.previewWindowOnce(ctx, p, startSec, widthSec)
+	}
+	return w, err
+}
+
+func (e *Engine) previewWindowOnce(ctx context.Context, p project.Project, startSec, widthSec float64) (*Window, error) {
 	pp, err := prepare(p)
 	if err != nil {
 		return nil, err
@@ -184,10 +193,12 @@ func (e *Engine) ensurePA(ctx context.Context, p project.Project, keys []string,
 	if e.cache == nil {
 		return sp, func() { sp.release(); cleanup() }, nil
 	}
-	e.cache.putSpool("pa", paKey, sp)
+	// 呼び出し側の参照は、キャッシュに登録する前に取る(登録後に別の実行が同じスロットを置き換えると、
+	// キャッシュの参照が返されて、取る前に消えてしまうため)
 	if !sp.acquire() {
 		return nil, nil, errors.New("render: PA段の一時ファイルがすでに解放されています")
 	}
+	e.cache.putSpool("pa", paKey, sp)
 	return sp, sp.release, nil
 }
 

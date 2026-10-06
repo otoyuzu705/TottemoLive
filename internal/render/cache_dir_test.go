@@ -205,23 +205,66 @@ func TestStoreInConfiguredDir(t *testing.T) {
 
 func TestCleanStaleTempIn(t *testing.T) {
 	base := t.TempDir()
-	old := filepath.Join(base, renderTempPrefix+"old")
-	oldPreview := filepath.Join(base, previewTempPrefix+"old")
-	fresh := filepath.Join(base, renderTempPrefix+"fresh")
+	old := filepath.Join(base, renderTempPrefix+"123")
+	oldPreview := filepath.Join(base, previewTempPrefix+"456")
+	fresh := filepath.Join(base, renderTempPrefix+"789")
 	other := filepath.Join(base, "unrelated")
-	for _, d := range []string{old, oldPreview, fresh, other} {
+	// 名前の頭だけが同じ、無関係なもの(ユーザーの置いたフォルダ)は、古くても消さない
+	memo := filepath.Join(base, renderTempPrefix+"メモ")
+	memo2 := filepath.Join(base, previewTempPrefix+"12a")
+	memo3 := filepath.Join(base, renderTempPrefix)
+	for _, d := range []string{old, oldPreview, fresh, other, memo, memo2, memo3} {
 		os.Mkdir(d, 0o755)
 	}
 	past := time.Now().Add(-48 * time.Hour)
-	for _, d := range []string{old, oldPreview, other} {
+	for _, d := range []string{old, oldPreview, other, memo, memo2, memo3} {
 		os.Chtimes(d, past, past)
 	}
 	CleanStaleTempIn(base, 24*time.Hour)
 	if fileExists(old) || fileExists(oldPreview) {
 		t.Error("stale dirs remain")
 	}
-	if !fileExists(fresh) || !fileExists(other) {
-		t.Error("fresh or unrelated dir was removed")
+	for _, d := range []string{fresh, other, memo, memo2, memo3} {
+		if !fileExists(d) {
+			t.Errorf("%s was removed", filepath.Base(d))
+		}
 	}
 	CleanStaleTempIn(filepath.Join(base, "missing"), time.Hour) // 無い場所でも落ちない
+}
+
+// 使っている作業ディレクトリ(Engine・Store)は、使うたびに更新時刻が更新されるので、
+// 別のインスタンスの起動時の掃除に消されない。使われなくなって古くなれば消える。
+func TestCleanStaleTempSkipsDirsInUse(t *testing.T) {
+	base := t.TempDir()
+	e := NewEngineWith(EngineConfig{CacheEnabled: true, Dir: base})
+	s := NewStoreIn(2, base)
+	defer e.Close()
+	defer s.Close()
+	ed, err := e.tempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sd, err := s.tempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-48 * time.Hour)
+	os.Chtimes(ed, past, past)
+	os.Chtimes(sd, past, past)
+	// 使うと(tempDir が呼ばれると)更新される
+	e.tempDir()
+	s.tempDir()
+	CleanStaleTempIn(base, 24*time.Hour)
+	if !fileExists(ed) || !fileExists(sd) {
+		t.Fatal("a work dir in use was cleaned")
+	}
+	// 他のインスタンスが消してしまった後でも、次に使うときに作り直す
+	os.Chtimes(ed, past, past)
+	CleanStaleTempIn(base, 24*time.Hour)
+	if fileExists(ed) {
+		t.Fatal("an unused stale dir remains")
+	}
+	if d, err := e.tempDir(); err != nil || !fileExists(d) {
+		t.Fatalf("not recreated: %q %v", d, err)
+	}
 }
