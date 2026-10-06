@@ -418,24 +418,6 @@ func sumBus(bufs [][][]float32) [][]float32 {
 	return bus
 }
 
-// applyPA は音源にゲインを掛けてPA質感(低域カット → 低域シェルフ → 高域シェルフ → コンプ → 歪み)を付ける。
-func applyPA(buf [][]float32, sr int, gainDb float64, pa project.PA) {
-	g := float32(dsp.DbToLin(gainDb))
-	for _, ch := range buf {
-		for i := range ch {
-			ch[i] *= g
-		}
-		dsp.HighPass(float64(sr), pa.LowCutHz).Process(ch)
-		dsp.LowShelf(float64(sr), pa.LowShelfHz, pa.LowShelfDb).Process(ch)
-		dsp.HighShelf(float64(sr), pa.HighShelfHz, pa.HighShelfDb).Process(ch)
-	}
-	dsp.Compress(buf, sr, dsp.CompParams{
-		ThresholdDb: pa.CompThresholdDb, Ratio: pa.CompRatio,
-		AttackMs: pa.CompAttackMs, ReleaseMs: pa.CompReleaseMs,
-	})
-	dsp.Saturate(buf, pa.Drive)
-}
-
 // directStage は左右のPAスピーカーを仮想スピーカーとして置き、リスナーの耳に届く直接音を返す。
 // スピーカーが1本ならモノラル和を、2本以上ならチャンネルを順に割り当てる(L,R,L,R...)。
 // サブウーファーが有効なときは、PA出力をクロスオーバーで分け、メインには中高域だけを送り、
@@ -457,83 +439,6 @@ func (e *Engine) directStage(ctx context.Context, pp *prepared, bus *lazyBus, pa
 	return memo(e.cache, "direct", key, func() ([][]float32, error) {
 		return directCompute(ctx, pp, bus.get(), total)
 	})
-}
-
-// directCompute は、バス in(曲の先頭からの信号)から直接音を計算する。長さは total。
-// 先行プレビューは、曲の一部を切り出したバスに対して同じ計算を呼ぶ。
-func directCompute(ctx context.Context, pp *prepared, in [][]float32, total int) ([][]float32, error) {
-	p := pp.p
-	spk := p.Venue.Speakers
-	subOn := subsActive(p)
-	out := [][]float32{make([]float32, total), make([]float32, total)}
-	// スピーカーごとに並列に計算し、できた順ではなくスピーカーの順に足し込む。
-	// 全スピーカーぶんの結果を同時に持たず、足し算の順序も固定になる
-	turn := make([]chan struct{}, len(spk))
-	for i := range turn {
-		turn[i] = make(chan struct{})
-	}
-	errs := make([]error, len(spk))
-	var wg sync.WaitGroup
-	for i, s := range spk {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer close(turn[i])
-			feed := speakerFeed(in, i, len(spk))
-			if subOn {
-				// 低域はサブが受け持つので、メインは中高域だけにする(元のバスは他の経路が使うので複製して掛ける)
-				feed = append([]float32(nil), feed...)
-				dsp.LR4HighPass(feed, sampleRate, p.Sub.CrossoverHz)
-			}
-			az, el, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
-			r, err := spatial.Direct(ctx, feed, sampleRate, d, az, el, pp.set, spatial.DirectParams{
-				Rolloff: p.Spatial.DistanceRolloff, AirAbsorption: p.Spatial.AirAbsorption,
-			})
-			if i > 0 {
-				<-turn[i-1]
-			}
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			for c := range out {
-				addInto(out[c], r[c])
-			}
-		}()
-	}
-	wg.Wait()
-	if err := errors.Join(errs...); err != nil {
-		return nil, err
-	}
-	if subOn {
-		addSubs(out, in, p, pp.pr)
-	}
-	return out, nil
-}
-
-// addSubs はサブウーファー経路を out(両耳)に足す。
-// バスの左右の合計(モノ)の低域を、サブの台数で割って(合計が levelDb になるように)、
-// サブごとに距離減衰・遅延を掛けて両耳に同じ信号として足す。
-// 左右の合計にするのは、中央に定位した低音(左右同じ信号)がメイン2本でコヒーレントに足される大きさ(+6 dB)に
-// 合わせるため。これで levelDb 0 が「メインの低域と同じ大きさ」になる。
-func addSubs(out, bus [][]float32, p project.Project, pr venue.Preset) {
-	mono := make([]float32, len(bus[0]))
-	for i := range mono {
-		mono[i] = bus[0][i] + bus[1][i]
-	}
-	dsp.LR4LowPass(mono, sampleRate, p.Sub.CrossoverHz)
-	g := float32(dsp.DbToLin(p.Sub.LevelDb) / float64(len(p.Venue.Subs)))
-	for i := range mono {
-		mono[i] *= g
-	}
-	extra := subAlignDelays(p, pr)
-	for i, s := range p.Venue.Subs {
-		_, _, d := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
-		sig := spatial.Sub(mono, sampleRate, d, extra[i], p.Spatial.DistanceRolloff)
-		for c := range out {
-			addInto(out[c], sig)
-		}
-	}
 }
 
 // subAlignReference は、サブをメインに時間合わせする基準点(現場のFOH: 客席の中央、奥行きの半分、耳の高さ)。
@@ -558,52 +463,6 @@ func subsActive(p project.Project) bool {
 	return p.Sub.Enabled == "on" && len(p.Venue.Subs) > 0
 }
 
-// radiatedMono は、スピーカーから放射された音のモノラル表現(会場の残響を励起する音)を返す。
-// サブが無効なら バスの左右平均。有効なら メインの高域(クロスオーバーより上)の左右平均 +
-// サブの低域(左右の合計のクロスオーバーより下に、サブのレベルを掛けたものの半分)。
-// 半分にするのは、サブ経路のモノ合計(左右の和)をメイン2本が出す低域(左右平均)の大きさにそろえるため:
-// サブ 0 dB で、分けない場合(左右平均)と同じ大きさになり、サブのレベルを上げると残響の低域もその分増える。
-// 実際の会場では、サブが強く鳴るほど部屋の低域の残響も増える。
-func radiatedMono(bus [][]float32, active bool, sub project.Sub) []float32 {
-	n := len(bus[0])
-	mono := make([]float32, n)
-	if !active {
-		for i := range mono {
-			mono[i] = (bus[0][i] + bus[1][i]) / 2
-		}
-		return mono
-	}
-	fs := float64(sampleRate)
-	tmp := make([]float32, n)
-	for c := 0; c < 2; c++ {
-		copy(tmp, bus[c])
-		dsp.LR4HighPass(tmp, fs, sub.CrossoverHz)
-		for i, v := range tmp {
-			mono[i] += v / 2
-		}
-	}
-	for i := range tmp {
-		tmp[i] = bus[0][i] + bus[1][i]
-	}
-	dsp.LR4LowPass(tmp, fs, sub.CrossoverHz)
-	g := float32(dsp.DbToLin(sub.LevelDb) / 2)
-	for i, v := range tmp {
-		mono[i] += v * g
-	}
-	return mono
-}
-
-func speakerFeed(bus [][]float32, i, count int) []float32 {
-	if count == 1 {
-		m := make([]float32, len(bus[0]))
-		for k := range m {
-			m[k] = (bus[0][k] + bus[1][k]) / 2
-		}
-		return m
-	}
-	return bus[i%2]
-}
-
 // reverbStage はスピーカーから放射された音(radiatedMono)を会場IR(左右)で畳み込む。
 // 残響は距離減衰を掛ける前の信号で駆動する(拡散音場のレベルは距離に依らないため)。
 // 読むもの: 会場、reverb.preDelayMs / decayScale / highDampHz / low*(低域の残響) / high*(高域の残響)、
@@ -621,30 +480,6 @@ func (e *Engine) reverbStage(ctx context.Context, pp *prepared, bus *lazyBus, ir
 	return memo(e.cache, "reverb", key, func() ([][]float32, error) {
 		return reverbCompute(ctx, pp, bus.get(), ir, total)
 	})
-}
-
-// reverbCompute は、バス in から残響を計算する(会場IR ir で畳み込む)。長さは total。
-func reverbCompute(ctx context.Context, pp *prepared, in, ir [][]float32, total int) ([][]float32, error) {
-	sub := pp.p.Sub
-	active := subsActive(pp.p)
-	if !active {
-		sub = project.Sub{}
-	}
-	mono := radiatedMono(in, active, sub)
-	out := [][]float32{make([]float32, total), make([]float32, total)}
-	errs := make([]error, 2)
-	var wg sync.WaitGroup
-	for c := 0; c < 2; c++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var y []float32
-			y, errs[c] = dsp.Convolve(ctx, mono, ir[c])
-			addInto(out[c], y)
-		}()
-	}
-	wg.Wait()
-	return out, errors.Join(errs...)
 }
 
 // mixGains は、ミックスの2本のゲイン(線形)。
@@ -666,24 +501,6 @@ func mixGainsFor(p project.Project, pr venue.Preset) mixGains {
 		direct: float32(dsp.DbToLin(p.Spatial.DirectLevelDb)),
 		reverb: float32(reverb),
 	}
-}
-
-// mix は直接音・残響を、それぞれのゲインで足す。
-func mix(g mixGains, direct, reverb [][]float32, reverbDelay int) [][]float32 {
-	out := make([][]float32, 2)
-	for c := range out {
-		out[c] = make([]float32, len(direct[c]))
-		for i := range out[c] {
-			out[c][i] = direct[c][i] * g.direct
-		}
-		// 残響は、リスナーに最初の音が届く時刻(reverbDelay)から始まる
-		for i, v := range reverb[c] {
-			if j := i + reverbDelay; j < len(out[c]) {
-				out[c][j] += v * g.reverb
-			}
-		}
-	}
-	return out
 }
 
 // firstArrivalSamples は、リスナーに最初に届く音(いちばん近いメインスピーカーからの直接音)の伝搬遅延(サンプル)。
@@ -710,13 +527,6 @@ func master(buf [][]float32, sr int, o project.Output) {
 		}
 	}
 	dsp.TruePeakLimit(buf, sr, o.CeilingDbTp)
-}
-
-func addInto(dst, src []float32) {
-	n := min(len(dst), len(src))
-	for i := 0; i < n; i++ {
-		dst[i] += src[i]
-	}
 }
 
 // steps は処理段階の進捗を「完了したタスク数 / 全タスク数」で通知する。
