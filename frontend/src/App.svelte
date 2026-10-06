@@ -9,8 +9,10 @@
   import Waveform from './lib/Waveform.svelte'
   import Transport from './lib/Transport.svelte'
   import ExportDialog from './lib/ExportDialog.svelte'
+  import SettingsDialog from './lib/SettingsDialog.svelte'
 
   let showExport = $state(false)
+  let showSettings = $state(false)
 
   // 中央に表示するもの: 会場マップ / スペクトラム。選んだ表示は次回の起動でも使う
   type CenterView = 'map' | 'spectrum'
@@ -59,6 +61,7 @@
     <button onclick={() => app.saveProject()}>保存</button>
     <button onclick={() => app.saveProject(true)}>名前を付けて保存…</button>
     <span class="path" title={app.projectPath}>{app.projectPath || '(未保存)'}</span>
+    <button onclick={() => (showSettings = true)}>設定…</button>
     <button class="primary" onclick={() => (showExport = true)}>書き出し…</button>
   </header>
 
@@ -89,6 +92,9 @@
   {/if}
   {#if showExport}
     <ExportDialog onclose={() => (showExport = false)} />
+  {/if}
+  {#if showSettings}
+    <SettingsDialog onclose={() => (showSettings = false)} />
   {/if}
 </div>
 

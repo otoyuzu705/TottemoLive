@@ -34,3 +34,16 @@ export function mmss(sec: number): string {
   const s = Math.max(0, Math.round(sec))
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
+
+/** バイト数を、1024 区切りの B / KB / MB / GB / TB で表す(3桁未満は小数1桁、それ以上は整数)。 */
+export function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '-'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return i === 0 ? `${Math.round(v)} B` : `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}

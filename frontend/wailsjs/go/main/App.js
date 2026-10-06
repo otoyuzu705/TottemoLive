@@ -30,12 +30,24 @@ export function ChooseProjectToOpen() {
   return window['go']['main']['App']['ChooseProjectToOpen']();
 }
 
+export function ClearCache() {
+  return window['go']['main']['App']['ClearCache']();
+}
+
 export function DeleteSoundPreset(arg1) {
   return window['go']['main']['App']['DeleteSoundPreset'](arg1);
 }
 
+export function GetCacheInfo() {
+  return window['go']['main']['App']['GetCacheInfo']();
+}
+
 export function GetPeaks(arg1, arg2) {
   return window['go']['main']['App']['GetPeaks'](arg1, arg2);
+}
+
+export function GetSettings() {
+  return window['go']['main']['App']['GetSettings']();
 }
 
 export function ListParams() {
@@ -62,6 +74,10 @@ export function OpenAudioFiles() {
   return window['go']['main']['App']['OpenAudioFiles']();
 }
 
+export function PickCacheDir() {
+  return window['go']['main']['App']['PickCacheDir']();
+}
+
 export function RenderOriginal(arg1) {
   return window['go']['main']['App']['RenderOriginal'](arg1);
 }
@@ -84,6 +100,10 @@ export function SaveSoundPreset(arg1, arg2) {
 
 export function SeparateSource(arg1) {
   return window['go']['main']['App']['SeparateSource'](arg1);
+}
+
+export function SetSettings(arg1) {
+  return window['go']['main']['App']['SetSettings'](arg1);
 }
 
 export function StartExport(arg1, arg2) {
