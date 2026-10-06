@@ -89,15 +89,25 @@ func (b *Biquad) Process(x []float32) {
 	}
 }
 
-// LR4LowPass は4次のLinkwitz-Riley低域通過(2次Butterworthを2段)をその場で掛ける。
-// 同じ周波数の LR4HighPass との合計は、位相はずれるが振幅はフラット(全域通過)になる。
-func LR4LowPass(x []float32, fs, f0 float64) {
-	LowPass(fs, f0).Process(x)
-	LowPass(fs, f0).Process(x)
+// LR4 は4次のLinkwitz-Riley(2次Butterworthを2段)。状態を持つので、信号を区切って順に Process してよい
+// (区切り方に結果は依らない)。同じ周波数の低域通過と高域通過の合計は、位相はずれるが振幅はフラットになる。
+type LR4 struct{ s1, s2 *Biquad }
+
+// NewLR4LowPass は4次のLinkwitz-Riley低域通過を返す。
+func NewLR4LowPass(fs, f0 float64) *LR4 { return &LR4{s1: LowPass(fs, f0), s2: LowPass(fs, f0)} }
+
+// NewLR4HighPass は4次のLinkwitz-Riley高域通過を返す。
+func NewLR4HighPass(fs, f0 float64) *LR4 { return &LR4{s1: HighPass(fs, f0), s2: HighPass(fs, f0)} }
+
+// Process はxをその場でフィルタする。
+func (f *LR4) Process(x []float32) {
+	f.s1.Process(x)
+	f.s2.Process(x)
 }
 
+// LR4LowPass は4次のLinkwitz-Riley低域通過(2次Butterworthを2段)をその場で掛ける。
+// 同じ周波数の LR4HighPass との合計は、位相はずれるが振幅はフラット(全域通過)になる。
+func LR4LowPass(x []float32, fs, f0 float64) { NewLR4LowPass(fs, f0).Process(x) }
+
 // LR4HighPass は4次のLinkwitz-Riley高域通過をその場で掛ける。
-func LR4HighPass(x []float32, fs, f0 float64) {
-	HighPass(fs, f0).Process(x)
-	HighPass(fs, f0).Process(x)
-}
+func LR4HighPass(x []float32, fs, f0 float64) { NewLR4HighPass(fs, f0).Process(x) }

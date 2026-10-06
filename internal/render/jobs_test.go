@@ -51,6 +51,7 @@ func TestJobsCancel(t *testing.T) {
 
 func TestStoreServesWithRange(t *testing.T) {
 	s := NewStore(2)
+	defer s.Close()
 	data := make([]byte, 1000)
 	for i := range data {
 		data[i] = byte(i)
@@ -101,6 +102,7 @@ func TestStoreServesWithRange(t *testing.T) {
 
 func TestStoreServesBands(t *testing.T) {
 	s := NewStore(2)
+	defer s.Close()
 	wavPath, bandsPath := s.PutWithBands([]byte("wavdata"), []byte{1, 2, 3, 4})
 	if bandsPath == "" {
 		t.Fatal("no bands path")

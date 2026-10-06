@@ -1,5 +1,25 @@
 export namespace main {
 	
+	export class CacheInfo {
+	    dir: string;
+	    enabled: boolean;
+	    usedBytes: number;
+	    freeBytes: number;
+	    freeKnown: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CacheInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dir = source["dir"];
+	        this.enabled = source["enabled"];
+	        this.usedBytes = source["usedBytes"];
+	        this.freeBytes = source["freeBytes"];
+	        this.freeKnown = source["freeKnown"];
+	    }
+	}
 	export class PreviewResult {
 	    url: string;
 	    bandsUrl: string;
@@ -373,6 +393,27 @@ export namespace project {
 	
 	
 	
+
+}
+
+export namespace settings {
+	
+	export class Settings {
+	    version: number;
+	    cacheEnabled: boolean;
+	    cacheDir: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Settings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.cacheEnabled = source["cacheEnabled"];
+	        this.cacheDir = source["cacheDir"];
+	    }
+	}
 
 }
 

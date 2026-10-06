@@ -10,36 +10,54 @@ type CompParams struct {
 	ReleaseMs   float64
 }
 
-// Compress はフィードフォワード式のステレオリンクコンプ(ハードニー、メイクアップなし)をその場で掛ける。
-// ゲインリダクションをdB領域で平滑化する。
-func Compress(buf [][]float32, sr int, p CompParams) {
-	if len(buf) == 0 || p.Ratio <= 1 {
-		return
-	}
+// Compressor はフィードフォワード式のステレオリンクコンプ(ハードニー、メイクアップなし)。
+// ゲインリダクションをdB領域で平滑化する。ゲインリダクションの状態を持つので、信号を区切って順に
+// Process してよい(区切り方に結果は依らない)。
+type Compressor struct {
+	on         bool
+	att, rel   float64
+	slope, thr float64
+	gr         float64 // 現在のゲインリダクション(dB, 正)
+}
+
+// NewCompressor はコンプレッサーを返す。Ratio が 1 以下なら Process は何もしない。
+func NewCompressor(sr int, p CompParams) *Compressor {
 	coef := func(ms float64) float64 {
 		return math.Exp(-1 / (math.Max(ms, 0.01) * 1e-3 * float64(sr)))
 	}
-	att, rel := coef(p.AttackMs), coef(p.ReleaseMs)
-	slope := 1 - 1/p.Ratio
-	gr := 0.0 // 現在のゲインリダクション(dB, 正)
+	return &Compressor{
+		on:  p.Ratio > 1,
+		att: coef(p.AttackMs), rel: coef(p.ReleaseMs),
+		slope: 1 - 1/p.Ratio, thr: p.ThresholdDb,
+	}
+}
+
+// Process は buf(チャンネル別)にその場でコンプを掛ける。
+func (c *Compressor) Process(buf [][]float32) {
+	if len(buf) == 0 || !c.on {
+		return
+	}
 	n := len(buf[0])
 	for i := 0; i < n; i++ {
 		peak := 0.0
 		for _, ch := range buf {
 			peak = math.Max(peak, math.Abs(float64(ch[i])))
 		}
-		target := math.Max(LinToDb(peak)-p.ThresholdDb, 0) * slope
-		if target > gr {
-			gr = att*gr + (1-att)*target
+		target := math.Max(LinToDb(peak)-c.thr, 0) * c.slope
+		if target > c.gr {
+			c.gr = c.att*c.gr + (1-c.att)*target
 		} else {
-			gr = rel*gr + (1-rel)*target
+			c.gr = c.rel*c.gr + (1-c.rel)*target
 		}
-		g := float32(DbToLin(-gr))
+		g := float32(DbToLin(-c.gr))
 		for _, ch := range buf {
 			ch[i] *= g
 		}
 	}
 }
+
+// Compress は buf 全体にコンプをその場で掛ける。
+func Compress(buf [][]float32, sr int, p CompParams) { NewCompressor(sr, p).Process(buf) }
 
 // driveMaxK は drive=1 のときの tanh の入力ゲイン。方式の形であり、強さは pa.drive で決まる。
 const driveMaxK = 6.0

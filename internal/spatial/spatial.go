@@ -72,9 +72,20 @@ type DirectParams struct {
 	AirAbsorption float64 // spatial.airAbsorption
 }
 
-// Direct はスピーカーへの入力 in を、距離減衰・空気吸収・伝搬遅延・HRIR畳み込みを通した
-// 左右の耳の信号にして返す。出力長は len(in)+遅延+len(HRIR)-1。
-func Direct(ctx context.Context, in []float32, sr int, dist, azDeg, elDeg float64, set Set, p DirectParams) ([][]float32, error) {
+// DirectStream は仮想スピーカー1本ぶんの直接音を、入力を区切って順に Process しながら計算する。
+// 距離減衰・空気吸収・伝搬遅延・HRIR畳み込みを通した左右の耳の信号になる(Direct と同じ計算)。
+// 結果は、全体を一度に計算した場合と、区切り方に依らずビット単位で一致する。
+type DirectStream struct {
+	pad     int // 先頭に入れるゼロの数(伝搬遅延 - 空気吸収の群遅延)
+	g       float32
+	started bool
+	conv    *dsp.StreamConvolver
+	x       []float32
+	l, r    []float32
+}
+
+// NewDirectStream は、距離 dist(m)・方位 azDeg・仰角 elDeg のスピーカーの直接音を計算する処理器を返す。
+func NewDirectStream(sr int, dist, azDeg, elDeg float64, set Set, p DirectParams) *DirectStream {
 	// 空気吸収(線形位相FIR)の群遅延ぶん、伝搬遅延から引いて、全体の遅れを合わせる(近すぎて引けないぶんは遅れる)
 	air := AirFIR(dist, p.AirAbsorption, sr)
 	delay := DelaySamples(dist, sr)
@@ -82,22 +93,75 @@ func Direct(ctx context.Context, in []float32, sr int, dist, azDeg, elDeg float6
 	if air != nil {
 		lead = min(delay, AirGroupDelay)
 	}
-	x := make([]float32, delay-lead+len(in))
-	g := float32(Gain(dist, p.Rolloff))
-	for i, v := range in {
-		x[delay-lead+i] = v * g
-	}
 	h := set.Lookup(azDeg, elDeg)
 	hl, hr := h.L, h.R
 	if air != nil {
 		// 吸収は、距離ごとの小さなFIRなので、HRIRと先に畳み込んで1回の畳み込みにする(長さは512以下に収まる)
 		hl, hr = convolveFIR(h.L, air), convolveFIR(h.R, air)
 	}
-	earL, earR, err := dsp.ConvolvePair(ctx, x, hl, hr)
-	if err != nil {
+	return &DirectStream{pad: delay - lead, g: float32(Gain(dist, p.Rolloff)), conv: dsp.NewStreamConvolver(hl, hr)}
+}
+
+// Process は入力 in の続きを与え、新しく確定した左右の耳の信号を返す。戻り値は次の Process / Flush まで有効。
+// 最初の呼び出しでは、伝搬遅延ぶんのゼロを先に流す。
+func (d *DirectStream) Process(in []float32) (l, r []float32) {
+	n := len(in)
+	if !d.started {
+		n += d.pad
+	}
+	if cap(d.x) < n {
+		d.x = make([]float32, n)
+	}
+	x := d.x[:n]
+	off := 0
+	if !d.started {
+		clear(x[:d.pad])
+		off = d.pad
+		d.started = true
+	}
+	for i, v := range in {
+		x[off+i] = v * d.g
+	}
+	out := d.conv.Process(x)
+	return out[0], out[1]
+}
+
+// Flush は入力の終わりを知らせ、残りの出力(HRIR・空気吸収の尾)を返す。
+// 左右の長さは同じにそろえる(短いほうは無音で埋める)。
+func (d *DirectStream) Flush() (l, r []float32) {
+	if !d.started && d.pad > 0 { // 入力が1つもなかった: 遅延ぶんのゼロだけを流す
+		pl, pr := d.Process(nil)
+		l, r = append(l, pl...), append(r, pr...)
+	}
+	out := d.conv.Flush()
+	l, r = append(l, out[0]...), append(r, out[1]...)
+	for len(l) < len(r) {
+		l = append(l, 0)
+	}
+	for len(r) < len(l) {
+		r = append(r, 0)
+	}
+	return l, r
+}
+
+// Direct はスピーカーへの入力 in を、距離減衰・空気吸収・伝搬遅延・HRIR畳み込みを通した
+// 左右の耳の信号にして返す。出力長は len(in)+遅延+len(HRIR)-1。DirectStream に全体を流す包み。
+func Direct(ctx context.Context, in []float32, sr int, dist, azDeg, elDeg float64, set Set, p DirectParams) ([][]float32, error) {
+	d := NewDirectStream(sr, dist, azDeg, elDeg, set, p)
+	var l, r []float32
+	const chunk = 65536
+	for from := 0; from < len(in); from += chunk {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		cl, cr := d.Process(in[from:min(from+chunk, len(in))])
+		l, r = append(l, cl...), append(r, cr...)
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return [][]float32{earL, earR}, nil
+	cl, cr := d.Flush()
+	return [][]float32{append(l, cl...), append(r, cr...)}, nil
 }
 
 // convolveFIR は短いFIR同士の直接畳み込み(長さ len(a)+len(b)-1)。
@@ -111,20 +175,51 @@ func convolveFIR(a, b []float32) []float32 {
 	return out
 }
 
+// SubStream はサブウーファーの信号(低域のモノ)に、距離減衰と伝搬遅延を掛ける処理器(Sub の流し処理版)。
+// 低域は方向の手がかりが弱く、空気吸収も受けにくいので、HRIRも空気吸収も通さない(両耳に同じ信号を足す)。
+// 出力は入力と同じ速さで出てきて(最初の Process で遅延ぶんのゼロが先に付く)、尾はない。
+type SubStream struct {
+	pad     int
+	g       float32
+	started bool
+	out     []float32
+}
+
+// NewSubStream は、距離 dist(m)・追加の遅延 extraDelay(サンプル)のサブの処理器を返す。
+func NewSubStream(sr int, dist float64, extraDelay int, rolloff float64) *SubStream {
+	return &SubStream{pad: DelaySamples(dist, sr) + max(extraDelay, 0), g: float32(Gain(dist, rolloff))}
+}
+
+// Process は入力 in の続きを与え、出力を返す(戻り値は次の Process まで有効)。
+func (s *SubStream) Process(in []float32) []float32 {
+	n := len(in)
+	if !s.started {
+		n += s.pad
+	}
+	if cap(s.out) < n {
+		s.out = make([]float32, n)
+	}
+	out := s.out[:n]
+	off := 0
+	if !s.started {
+		clear(out[:s.pad])
+		off = s.pad
+		s.started = true
+	}
+	for i, v := range in {
+		out[off+i] = v * s.g
+	}
+	return out
+}
+
 // Sub はサブウーファーの信号(低域のモノ)に、距離減衰と伝搬遅延を掛けて返す。
 // 低域は方向の手がかりが弱く、空気吸収も受けにくいので、HRIRも空気吸収も通さない(両耳に同じ信号を足す)。
 // 遅延は、リスナーまでの伝搬遅延(dist / 音速)に、サブをメインに時間合わせするための追加の遅延 extraDelay
 // (サンプル)を足したもの。追加の遅延は、現場と同じく基準点で1回だけ決める(SubAlignDelays)ので、
 // 基準点から離れた席では、サブとメインの時間差やサブ同士の干渉が実際のように出る。
-// 減衰はサブ自身の距離で決まる。出力長は len(in)+遅延。
+// 減衰はサブ自身の距離で決まる。出力長は len(in)+遅延。SubStream に全体を流す包み。
 func Sub(in []float32, sr int, dist float64, extraDelay int, rolloff float64) []float32 {
-	delay := DelaySamples(dist, sr) + max(extraDelay, 0)
-	g := float32(Gain(dist, rolloff))
-	out := make([]float32, delay+len(in))
-	for i, v := range in {
-		out[delay+i] = v * g
-	}
-	return out
+	return append([]float32(nil), NewSubStream(sr, dist, extraDelay, rolloff).Process(in)...)
 }
 
 // SubAlignDelays は、サブをメインに時間合わせするための、サブごとの追加の遅延(サンプル)。

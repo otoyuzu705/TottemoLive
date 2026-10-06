@@ -58,6 +58,11 @@ class AppState {
       void this.addPaths(paths)
     }, false)
     this.stemAvailable = await Go.StemSeparationAvailable()
+    // 設定(キャッシュの置き場所・オン/オフ)が変わると、処理中のプレビューは中断され、配信中のプレビューのURLも切れる。作り直す
+    EventsOn('settings:applied', () => {
+      this.schedulePreview()
+      this.scheduleOriginal()
+    })
     // separate:* イベントの中身は Go側 app.go の SeparateProgressEvent / SeparateDoneEvent / SeparateErrorEvent
     EventsOn('separate:progress', (e: { sourceId: string; ratio: number }) => {
       const cur = this.separating[e.sourceId]

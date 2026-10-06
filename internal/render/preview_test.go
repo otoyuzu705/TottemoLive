@@ -29,12 +29,12 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 		{"reverb.mix", func(p *project.Project) { p.Reverb.Mix = 0.6 }, nil},
 		{"spatial.directLevelDb", func(p *project.Project) { p.Spatial.DirectLevelDb = -3 }, nil},
 		{"output.targetLufs", func(p *project.Project) { p.Output.TargetLufs = -18 }, nil},
-		{"pa.inputLufs", func(p *project.Project) { p.PA.InputLufs = -14 }, []string{"pa:0", "paSpectrum", "direct", "reverb"}},
-		{"pa.autoLevel", func(p *project.Project) { p.PA.AutoLevel = "off" }, []string{"pa:0", "paSpectrum", "direct", "reverb"}},
-		{"pa.lowShelfDb", func(p *project.Project) { p.PA.LowShelfDb = 6 }, []string{"pa:0", "paSpectrum", "direct", "reverb"}},
-		{"pa.lowShelfHz", func(p *project.Project) { p.PA.LowShelfHz = 200 }, []string{"pa:0", "paSpectrum", "direct", "reverb"}},
-		{"pa.lowCutHz", func(p *project.Project) { p.PA.LowCutHz = 120 }, []string{"pa:0", "paSpectrum", "direct", "reverb"}},
-		{"source gain", func(p *project.Project) { p.Sources[0].GainDb = -3 }, []string{"inputLevel", "pa:0", "paSpectrum", "direct", "reverb"}},
+		{"pa.inputLufs", func(p *project.Project) { p.PA.InputLufs = -14 }, []string{"pa", "paSpectrum", "direct", "reverb"}},
+		{"pa.autoLevel", func(p *project.Project) { p.PA.AutoLevel = "off" }, []string{"pa", "paSpectrum", "direct", "reverb"}},
+		{"pa.lowShelfDb", func(p *project.Project) { p.PA.LowShelfDb = 6 }, []string{"pa", "paSpectrum", "direct", "reverb"}},
+		{"pa.lowShelfHz", func(p *project.Project) { p.PA.LowShelfHz = 200 }, []string{"pa", "paSpectrum", "direct", "reverb"}},
+		{"pa.lowCutHz", func(p *project.Project) { p.PA.LowCutHz = 120 }, []string{"pa", "paSpectrum", "direct", "reverb"}},
+		{"source gain", func(p *project.Project) { p.Sources[0].GainDb = -3 }, []string{"inputLevel", "pa", "paSpectrum", "direct", "reverb"}},
 		{"reverb.decayScale", func(p *project.Project) { p.Reverb.DecayScale = 0.6 }, []string{"reverb"}},
 		{"reverb.highDecayScale", func(p *project.Project) { p.Reverb.HighDecayScale = 0.3 }, []string{"reverb"}},
 		{"reverb.highDecayHz", func(p *project.Project) { p.Reverb.HighDecayHz = 8000 }, []string{"reverb"}},
@@ -52,7 +52,7 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			e := NewEngine()
+			e := newTestEngine(t)
 			if _, err := e.Preview(context.Background(), base, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -81,7 +81,7 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 func TestPreviewCacheHitOnRepeat(t *testing.T) {
 	p := testProject(makeSource(t, t.TempDir()))
 	p.Venue.Preset = "livehouse"
-	e := NewEngine()
+	e := newTestEngine(t)
 	a, _ := e.Preview(context.Background(), p, nil)
 	before := computed(e)
 	b, _ := e.Preview(context.Background(), p, nil)
@@ -105,7 +105,7 @@ func TestPreviewMatchesRender(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prev, err := NewEngine().Preview(context.Background(), p, nil)
+	prev, err := newTestEngine(t).Preview(context.Background(), p, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestPreviewMatchesRender(t *testing.T) {
 func TestOriginal(t *testing.T) {
 	p := testProject(makeSource(t, t.TempDir()))
 	p.Sources[0].GainDb = -6
-	r, err := NewEngine().Original(context.Background(), p)
+	r, err := newTestEngine(t).Original(context.Background(), p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,14 +144,15 @@ func TestOriginal(t *testing.T) {
 func TestDecodeOnlyWhenNeeded(t *testing.T) {
 	p := testProject(makeSource(t, t.TempDir()))
 	p.Venue.Preset = "livehouse"
-	e := NewEngine()
+	e := newTestEngine(t)
 	preview := func(q project.Project) {
 		if _, err := e.Preview(context.Background(), q, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 	preview(p)
-	if n := e.decodes.Load(); n != 1 {
+	// 初回は、レベル合わせの測定と、PA段の2回(曲全体をメモリに持たないので、測定のデコードはPA段に渡さない)
+	if n := e.decodes.Load(); n != 2 {
 		t.Fatalf("first preview decoded %d times", n)
 	}
 	for name, mod := range map[string]func(*project.Project){
@@ -162,14 +163,14 @@ func TestDecodeOnlyWhenNeeded(t *testing.T) {
 		q := p.Clone()
 		mod(&q)
 		preview(q)
-		if n := e.decodes.Load(); n != 1 {
+		if n := e.decodes.Load(); n != 2 {
 			t.Errorf("%s: decoded again (%d)", name, n)
 		}
 	}
 	q := p.Clone()
 	q.PA.LowCutHz = 150
 	preview(q)
-	if n := e.decodes.Load(); n != 2 {
+	if n := e.decodes.Load(); n != 3 {
 		t.Errorf("pa change should decode once more, total %d", n)
 	}
 }

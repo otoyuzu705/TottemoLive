@@ -14,6 +14,7 @@ import (
 
 	"tottemolive/internal/audio"
 	"tottemolive/internal/project"
+	"tottemolive/internal/settings"
 )
 
 type events struct {
@@ -61,7 +62,8 @@ func newTestApp(t *testing.T) (*App, *events, project.Project) {
 		"-i", "sine=frequency=330:sample_rate=44100:duration=3", src).CombinedOutput(); err != nil {
 		t.Fatalf("ffmpeg: %v %s", err, out)
 	}
-	a := NewApp()
+	a := newAppAt(t.TempDir(), t.TempDir())
+	t.Cleanup(func() { a.shutdown(context.Background()) })
 	a.ctx = context.Background()
 	a.presets.UserDir = t.TempDir()
 	ev := &events{}
@@ -116,6 +118,18 @@ func TestRenderPreviewServesWav(t *testing.T) {
 	}
 	if code, body := get(r.URL); code != 200 || len(body) < 44+2*2*48000*3 || string(body[:4]) != "RIFF" {
 		t.Errorf("wav: status=%d len=%d", code, len(body))
+	}
+	// Rangeリクエスト(シーク用)に部分的に答える
+	req, _ := http.NewRequest("GET", srv.URL+r.URL, nil)
+	req.Header.Set("Range", "bytes=44-107")
+	if res, err := http.DefaultClient.Do(req); err != nil {
+		t.Fatal(err)
+	} else {
+		part, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if res.StatusCode != http.StatusPartialContent || len(part) != 64 {
+			t.Errorf("range: status=%d len=%d", res.StatusCode, len(part))
+		}
 	}
 
 	// PA出力の帯域レベル: 件数・フレーム数・バイト数が結果の項目と一致する
@@ -225,7 +239,7 @@ func TestSoundPresetsViaApp(t *testing.T) {
 }
 
 func TestProgressEmitterThrottles(t *testing.T) {
-	a := NewApp()
+	a := newAppAt(t.TempDir(), t.TempDir())
 	ev := &events{}
 	a.emit = ev.emit
 	prog := a.progressEmitter("j")
@@ -323,4 +337,58 @@ func TestMigrateDir(t *testing.T) {
 	}
 	// どちらも無くてもエラーにならない
 	migrateDir(filepath.Join(root, "none"), filepath.Join(root, "none2"))
+}
+
+// アプリの終了時に、プレビューの一時ファイル(段のキャッシュ・配信中のWAV)が消える。
+func TestShutdownRemovesTempFiles(t *testing.T) {
+	a, _, p := newTestApp(t)
+	// 他のパッケージのテストと一時フォルダを共有しないよう、置き場所を専用のフォルダにする
+	tmp := t.TempDir()
+	if err := a.SetSettings(settings.Settings{CacheEnabled: true, CacheDir: tmp}); err != nil {
+		t.Fatal(err)
+	}
+	list := func() map[string]bool {
+		dirs, _ := filepath.Glob(filepath.Join(tmp, "tottemolive-*-*"))
+		m := map[string]bool{}
+		for _, d := range dirs {
+			m[d] = true
+		}
+		return m
+	}
+	before := list()
+	r, err := a.RenderPreview(p)
+	if err != nil || r.URL == "" {
+		t.Fatalf("preview: %+v %v", r, err)
+	}
+	if _, err := a.RenderOriginal(p); err != nil {
+		t.Fatal(err)
+	}
+	var mine []string
+	for d := range list() {
+		if !before[d] {
+			mine = append(mine, d)
+		}
+	}
+	if len(mine) == 0 {
+		t.Fatal("no temp dirs while previews are alive")
+	}
+	a.shutdown(context.Background())
+	for _, d := range mine {
+		if _, err := os.Stat(d); err == nil {
+			t.Errorf("%s remains after shutdown", d)
+		}
+	}
+}
+
+// snapshot は、これまでに出たイベントの写し。
+func (e *events) snapshot() []struct {
+	name string
+	data any
+} {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]struct {
+		name string
+		data any
+	}(nil), e.list...)
 }
