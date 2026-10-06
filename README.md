@@ -111,4 +111,7 @@ python3 scripts/package.py --target macos-arm64
 MacのZIP作成はdittoを使うためMac上で実行してください。
 ZIPと.zip.sha256はdistに出力されます。
 
+プレビューの一時ファイル（ディスクキャッシュ）の使用・置き場所はアプリの設定ダイアログで変えられます。
+CLIは環境変数`TOTTEMOLIVE_CACHE_DIR`と`TOTTEMOLIVE_CACHE=off`で指定します（詳細は[docs/INSTALL.md](docs/INSTALL.md)）。
+
 設計と開発規約は[設計書](TottemoLive-design.md)と[CLAUDE.md](CLAUDE.md)を参照してください。
