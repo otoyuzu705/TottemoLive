@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"math"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -24,8 +23,23 @@ type Engine struct {
 	analyzePA bool
 	decodes   atomic.Int64 // デコードした回数(テスト用)
 
+	// chunk は流し処理の1回のフレーム数(0なら既定の65536。テストでチャンク不変性を確かめるために変える)
+	chunk int
+	// openSource は音源のデコーダーを開く関数(nil なら audio.OpenDecoder。テストで合成音源を差し込む)
+	openSource func(ctx context.Context, path string, sr int, progress func(float64)) (frameReader, error)
+
 	dirMu sync.Mutex
 	dir   string // 段の出力(スプール)を置く一時ディレクトリ。最初に要るときに作る
+}
+
+// defaultChunk は流し処理の1回のフレーム数。
+const defaultChunk = 65536
+
+func (e *Engine) chunkSize() int {
+	if e.chunk > 0 {
+		return e.chunk
+	}
+	return defaultChunk
 }
 
 // tempDir はスプールを置く一時ディレクトリ(Engine ごと。最初に呼ばれたときに作る)。
@@ -64,40 +78,6 @@ func NewEngine() *Engine { return &Engine{cache: newCache(), analyzePA: true} }
 // 音量も曲全体で測るので、書き出しと同じになる。
 func (e *Engine) Preview(ctx context.Context, p project.Project, prog Progress) (*Result, error) {
 	return e.run(ctx, p, prog)
-}
-
-// Original は曲全体の原音(音源にゲインを掛けて足しただけ)を返す。A/B比較用。
-// 音量差で判断が偏らないよう、マスター(ラウドネス・リミッタ)だけは通して同じ目標にそろえる。
-func (e *Engine) Original(ctx context.Context, p project.Project) (*Result, error) {
-	pp, err := prepare(p)
-	if err != nil {
-		return nil, err
-	}
-	srcs := e.sources(pp.p.Sources, nil)
-	// 音源ごとにデコードして、ゲインを掛けながらバスに足す(全音源を同時には持たない)
-	var out [][]float32
-	for i, src := range srcs {
-		buf, err := src.load(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if out == nil {
-			out = [][]float32{make([]float32, len(buf[0])), make([]float32, len(buf[0]))}
-		}
-		for c := range out {
-			if len(buf[c]) > len(out[c]) {
-				out[c] = append(out[c], make([]float32, len(buf[c])-len(out[c]))...)
-			}
-		}
-		g := float32(math.Pow(10, pp.p.Sources[i].GainDb/20))
-		for c := range out {
-			for k, v := range buf[c] {
-				out[c][k] += v * g
-			}
-		}
-	}
-	master(out, sampleRate, pp.p.Output)
-	return &Result{Audio: out, SampleRate: sampleRate}, nil
 }
 
 // CacheStat は段(スロット)ごとの計算回数とキャッシュヒット回数。

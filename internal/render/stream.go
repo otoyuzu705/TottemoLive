@@ -74,3 +74,35 @@ func (q *frameQueue) collect(n int) [][]float32 {
 	q.readAt(0, out)
 	return out
 }
+
+// Sink は出力の書き出し先。Start で全体のフレーム数が分かってから、Write で順に続きを受け取る。
+type Sink interface {
+	Start(frames, sampleRate int) error
+	Write(buf [][]float32) error
+}
+
+// memSink は出力をメモリに集める(テストと短い素材用)。
+type memSink struct {
+	Audio [][]float32
+}
+
+func (m *memSink) Start(frames, sampleRate int) error {
+	m.Audio = [][]float32{make([]float32, 0, frames), make([]float32, 0, frames)}
+	return nil
+}
+
+func (m *memSink) Write(buf [][]float32) error {
+	for c := range m.Audio {
+		m.Audio[c] = append(m.Audio[c], buf[c]...)
+	}
+	return nil
+}
+
+// frameReader は音源のデコーダー(audio.Decoder が満たす)。テストでは合成音源に差し替える。
+type frameReader interface {
+	// Read は dst を満たすまで読む。終わりは 0, io.EOF。
+	Read(dst [][]float32) (int, error)
+	// ExpectedFrames は総フレーム数の見積もり(分からなければ 0)。
+	ExpectedFrames() int
+	Close() error
+}

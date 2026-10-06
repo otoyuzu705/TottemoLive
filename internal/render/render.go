@@ -44,9 +44,11 @@ func (p Progress) report(stage string, ratio float64) {
 	}
 }
 
-// Result はレンダリング結果(ステレオ、float32)。
+// Result はレンダリング結果。音声そのものは Sink に流れる(Audio を持つのは、メモリに集める Render / Original /
+// Preview だけ。テストと短い素材用)。
 type Result struct {
-	Audio      [][]float32
+	Audio      [][]float32 // ステレオ、float32。Sink に流す API では nil
+	Frames     int         // 出力のフレーム数
 	SampleRate int
 	LUFS       float64 // 出力の統合ラウドネス
 	// PA は、PA出力(サブ分割の前のバス)の帯域レベルの時系列。プレビュー用のエンジンだけが作る(書き出しでは nil)。
@@ -59,22 +61,6 @@ type PASpectrum struct {
 	// OffsetDb は、PA出力の全体の大きさを、耳に届く出力(マスター後)の全体の大きさにそろえるための値(dB)。
 	// 距離減衰・ミックス・ラウドネス調整による全体の音量の違いを除いて、音色(帯域ごとの差)だけを比べられる。
 	OffsetDb float64
-}
-
-// Render はプロジェクト全体をレンダリングする(キャッシュなし)。
-func Render(ctx context.Context, p project.Project, prog Progress) (*Result, error) {
-	return (&Engine{}).run(ctx, p, prog)
-}
-
-// Export はレンダリングして24bit WAVに書き出す。
-func Export(ctx context.Context, p project.Project, outPath string, prog Progress) error {
-	res, err := Render(ctx, p, prog)
-	if err != nil {
-		return err
-	}
-	return audio.EncodeWAV(ctx, outPath, res.Audio, res.SampleRate, func(r float64) {
-		prog.report(StageEncode, r)
-	})
 }
 
 // prepared は検証済みのプロジェクトと、そこから決まる会場・HRIR。
@@ -173,7 +159,7 @@ func (e *Engine) run(ctx context.Context, p project.Project, prog Progress) (*Re
 	out := mix(mixGainsFor(p, pp.pr), crop(direct, outLen), crop(reverb, outLen-revDelay), revDelay)
 	master(out, sampleRate, p.Output)
 	steps.done()
-	res := &Result{Audio: out, SampleRate: sampleRate, LUFS: dsp.IntegratedLUFS(out, sampleRate)}
+	res := &Result{Audio: out, Frames: len(out[0]), SampleRate: sampleRate, LUFS: dsp.IntegratedLUFS(out, sampleRate)}
 	if paSpec.series != nil {
 		res.PA = &PASpectrum{Series: paSpec.series, OffsetDb: levelOffsetDb(paSpec.meanSquare, out, songLen)}
 	}
@@ -276,10 +262,8 @@ type paResult struct {
 }
 
 // inputLevel はPA入力のレベル合わせの結果。AlignDb はPAの前に全音源へ共通に掛けるゲイン(dB)。
-// Preloaded は、レベルの測定のためにデコードした音源(PA段が再利用する。使ったら nil にする)。
 type inputLevel struct {
-	AlignDb   float64
-	preloaded [][][]float32
+	AlignDb float64
 }
 
 // inputLevelStage は、PAの前にレベルをそろえるゲインを求める。PAのコンプ(スレッショルド -18 dBFS など)と歪みは
@@ -288,7 +272,7 @@ type inputLevel struct {
 // 全音源に共通のゲインなので、ボーカルと伴奏などの音量バランスは変わらない。音源のゲインは、その上の微調整になる。
 //
 // 読むもの: 音源のファイルとゲインだけ(測定したラウドネスはキャッシュし、pa.inputLufs の変更ではデコードし直さない)。
-// 測定のためにデコードしたときは、その結果をPA段に渡して二重にデコードしない。
+// 測定は音源を流しながら行う(曲全体をメモリに持たない)ので、PA段のデコードとは別に、もう一度デコードする。
 func (e *Engine) inputLevelStage(ctx context.Context, p project.Project, srcs []stageOut) (inputLevel, error) {
 	if p.PA.AutoLevel != "on" {
 		return inputLevel{}, nil
@@ -298,43 +282,13 @@ func (e *Engine) inputLevelStage(ctx context.Context, p project.Project, srcs []
 		parts = append(parts, s.key, p.Sources[i].GainDb)
 	}
 	key := hashKey(parts...)
-	var preloaded [][][]float32
 	lufs, err := memo(e.cache, "inputLevel", key, func() (float64, error) {
-		bufs := make([][][]float32, len(srcs))
-		errs := make([]error, len(srcs))
-		var wg sync.WaitGroup
-		for i := range srcs {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				bufs[i], errs[i] = srcs[i].load(ctx)
-			}()
-		}
-		wg.Wait()
-		if err := errors.Join(errs...); err != nil {
-			return 0, err
-		}
-		sum := make([][]float32, 2)
-		n := 0
-		for _, b := range bufs {
-			n = max(n, len(b[0]))
-		}
-		for c := range sum {
-			sum[c] = make([]float32, n)
-			for i, b := range bufs {
-				g := float32(dsp.DbToLin(p.Sources[i].GainDb))
-				for k, v := range b[c] {
-					sum[c][k] += v * g
-				}
-			}
-		}
-		preloaded = bufs
-		return dsp.IntegratedLUFS(sum, sampleRate), nil
+		return e.measureInputLevel(ctx, p, nil)
 	})
 	if err != nil {
 		return inputLevel{}, err
 	}
-	lv := inputLevel{preloaded: preloaded}
+	lv := inputLevel{}
 	if !math.IsInf(lufs, 0) && !math.IsNaN(lufs) {
 		lv.AlignDb = math.Min(math.Max(p.PA.InputLufs-lufs, -maxAlignDb), maxAlignDb)
 	}
@@ -358,14 +312,9 @@ func (e *Engine) paStage(ctx context.Context, p project.Project, srcs []stageOut
 			defer steps.done()
 			keys[i] = hashKey(srcs[i].key, p.Sources[i].GainDb, level.AlignDb, p.PA)
 			res.bufs[i], errs[i] = memo(e.cache, fmt.Sprintf("pa:%d", i), keys[i], func() ([][]float32, error) {
-				var buf [][]float32
-				if level.preloaded != nil && level.preloaded[i] != nil {
-					buf, level.preloaded[i] = level.preloaded[i], nil // レベルの測定でデコード済み
-				} else {
-					var err error
-					if buf, err = srcs[i].load(ctx); err != nil { // デコード結果は他で使わないので、その場で処理してよい
-						return nil, err
-					}
+				buf, err := srcs[i].load(ctx) // デコード結果は他で使わないので、その場で処理してよい
+				if err != nil {
+					return nil, err
 				}
 				applyPA(buf, sampleRate, p.Sources[i].GainDb+level.AlignDb, p.PA)
 				return buf, nil

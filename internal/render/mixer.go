@@ -1,6 +1,15 @@
 package render
 
-import "math"
+import (
+	"context"
+	"fmt"
+	"io"
+	"math"
+
+	"tottemolive/internal/analysis"
+	"tottemolive/internal/dsp"
+	"tottemolive/internal/project"
+)
 
 // mixBlock は、ミックスが1回に処理するフレーム数。
 const mixBlock = 65536
@@ -79,4 +88,83 @@ func mix(g mixGains, direct, reverb [][]float32, reverbDelay int) [][]float32 {
 	}}
 	_ = m.drain(n)
 	return out
+}
+
+// masterPass はマスター(ラウドネス調整 → トゥルーピークリミッタ)を、ミックス済みのスプール in に掛けて sink へ流す。
+// lufs はミックス全体の統合ラウドネス(有限のときだけ、目標に合わせるゲインを掛ける)。
+// 戻り値は、出力全体の統合ラウドネスと、出力の曲の長さ(songLen フレーム)までの左右平均の2乗平均。
+func masterPass(ctx context.Context, in *spool, outLen, songLen int, lufs float64, o project.Output, sink Sink, prog Progress) (outLufs, finalMS float64, err error) {
+	if err := sink.Start(outLen, sampleRate); err != nil {
+		return 0, 0, err
+	}
+	r, err := in.open(0)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer r.Close()
+	apply := !math.IsInf(lufs, 0) && !math.IsNaN(lufs)
+	var g float32
+	if apply {
+		g = float32(dsp.DbToLin(o.TargetLufs - lufs))
+	}
+	lim := dsp.NewLimiter(sampleRate, 2, o.CeilingDbTp)
+	meter := dsp.NewLoudnessMeter(sampleRate, 2)
+	var ms analysis.MeanSquareAcc
+	pos := 0
+	emit := func(out [][]float32) error {
+		if len(out[0]) == 0 {
+			return nil
+		}
+		if err := sink.Write(out); err != nil {
+			return err
+		}
+		meter.Write(out)
+		if pos < songLen {
+			k := min(len(out[0]), songLen-pos)
+			ms.Add(analysis.Mono(out[0][:k], out[1][:k]))
+		}
+		pos += len(out[0])
+		prog.report(StageEncode, float64(pos)/float64(outLen))
+		return nil
+	}
+	prog.report(StageEncode, 0)
+	buf := [][]float32{make([]float32, mixBlock), make([]float32, mixBlock)}
+	for {
+		if err := ctx.Err(); err != nil {
+			return 0, 0, err
+		}
+		n, rerr := r.Read(buf)
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return 0, 0, rerr
+		}
+		chunk := [][]float32{buf[0][:n], buf[1][:n]}
+		if apply {
+			for _, ch := range chunk {
+				for i := range ch {
+					ch[i] *= g
+				}
+			}
+		}
+		if err := emit(lim.Process(chunk)); err != nil {
+			return 0, 0, err
+		}
+	}
+	if err := emit(lim.Flush()); err != nil {
+		return 0, 0, err
+	}
+	if pos != outLen {
+		return 0, 0, fmt.Errorf("render: 出力が %d フレームのはずが %d フレームでした", outLen, pos)
+	}
+	return meter.Integrated(), ms.Value(), nil
+}
+
+// levelOffsetFromMS は、PA出力の2乗平均 paMS を、マスター後の出力(曲の長さぶん、左右平均)の2乗平均 finalMS にそろえる dB。
+func levelOffsetFromMS(paMS, finalMS float64) float64 {
+	if paMS <= 0 || finalMS <= 0 {
+		return 0
+	}
+	return 10 * math.Log10(finalMS/paMS)
 }

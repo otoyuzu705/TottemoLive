@@ -8,6 +8,7 @@ package render
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"testing"
@@ -375,7 +376,7 @@ func compareAudio(t *testing.T, name string, got, want [][]float32) (maxDiff flo
 	return maxDiff, mismatches
 }
 
-// 現行(参照)の全体処理と、Render の出力が一致する。
+// 現行(参照)の全体処理と、Render の出力が、チャンクの大きさに依らず一致する。
 func TestLegacyMatchesRender(t *testing.T) {
 	base := twoSourceProject(t)
 	cases := []struct {
@@ -384,12 +385,14 @@ func TestLegacyMatchesRender(t *testing.T) {
 	}{
 		{"livehouse", func(p *project.Project) {}},
 		{"arena sub on", func(p *project.Project) {
-			p.Venue.Preset = "arena"
 			*p = applyVenueForTest(*p, "arena")
 		}},
 		{"livehouse sub off autolevel off", func(p *project.Project) {
 			p.Sub.Enabled = "off"
 			p.PA.AutoLevel = "off"
+		}},
+		{"one source", func(p *project.Project) {
+			p.Sources = p.Sources[:1]
 		}},
 	}
 	for _, tc := range cases {
@@ -400,16 +403,22 @@ func TestLegacyMatchesRender(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := Render(context.Background(), p, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			maxDiff, n := compareAudio(t, tc.name, got.Audio, want)
-			if maxDiff > 1e-6 {
-				t.Errorf("max|diff| %g (%d samples differ)", maxDiff, n)
-			}
-			if d := math.Abs(got.LUFS - wantLufs); d > 1e-9 {
-				t.Errorf("LUFS %v vs %v", got.LUFS, wantLufs)
+			for _, chunk := range []int{997, 4096, 65536, 1 << 20} {
+				got, err := (&Engine{chunk: chunk}).renderMem(context.Background(), p, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				name := fmt.Sprintf("%s chunk=%d", tc.name, chunk)
+				maxDiff, n := compareAudio(t, name, got.Audio, want)
+				if maxDiff > 1e-6 {
+					t.Errorf("%s: max|diff| %g (%d samples differ)", name, maxDiff, n)
+				}
+				if d := math.Abs(got.LUFS - wantLufs); d > 1e-9 {
+					t.Errorf("%s: LUFS %v vs %v", name, got.LUFS, wantLufs)
+				}
+				if got.Frames != len(want[0]) {
+					t.Errorf("%s: frames %d vs %d", name, got.Frames, len(want[0]))
+				}
 			}
 		})
 	}
@@ -421,4 +430,52 @@ func applyVenueForTest(p project.Project, id string) project.Project {
 		panic(err)
 	}
 	return q
+}
+
+// legacyOriginal は、流し処理にする前の Original(全音源をデコードして足し、マスターを通す)。
+func legacyOriginal(ctx context.Context, p project.Project) ([][]float32, error) {
+	pp, err := prepare(p)
+	if err != nil {
+		return nil, err
+	}
+	var out [][]float32
+	for i, s := range pp.p.Sources {
+		buf, err := audio.Decode(ctx, s.Path, sampleRate, nil)
+		if err != nil {
+			return nil, err
+		}
+		if out == nil {
+			out = [][]float32{make([]float32, len(buf[0])), make([]float32, len(buf[0]))}
+		}
+		for c := range out {
+			if len(buf[c]) > len(out[c]) {
+				out[c] = append(out[c], make([]float32, len(buf[c])-len(out[c]))...)
+			}
+		}
+		g := float32(math.Pow(10, pp.p.Sources[i].GainDb/20))
+		for c := range out {
+			for k, v := range buf[c] {
+				out[c][k] += v * g
+			}
+		}
+	}
+	legacyMaster(out, sampleRate, pp.p.Output)
+	return out, nil
+}
+
+func TestOriginalMatchesLegacy(t *testing.T) {
+	p := twoSourceProject(t)
+	want, err := legacyOriginal(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, chunk := range []int{997, 65536} {
+		got, err := (&Engine{chunk: chunk}).Original(context.Background(), p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m, n := compareAudio(t, "original", got.Audio, want); m != 0 || n != 0 {
+			t.Fatalf("chunk %d: original differs", chunk)
+		}
+	}
 }

@@ -151,7 +151,8 @@ func TestDecodeOnlyWhenNeeded(t *testing.T) {
 		}
 	}
 	preview(p)
-	if n := e.decodes.Load(); n != 1 {
+	// 初回は、レベル合わせの測定と、PA段の2回(曲全体をメモリに持たないので、測定のデコードはPA段に渡さない)
+	if n := e.decodes.Load(); n != 2 {
 		t.Fatalf("first preview decoded %d times", n)
 	}
 	for name, mod := range map[string]func(*project.Project){
@@ -162,14 +163,14 @@ func TestDecodeOnlyWhenNeeded(t *testing.T) {
 		q := p.Clone()
 		mod(&q)
 		preview(q)
-		if n := e.decodes.Load(); n != 1 {
+		if n := e.decodes.Load(); n != 2 {
 			t.Errorf("%s: decoded again (%d)", name, n)
 		}
 	}
 	q := p.Clone()
 	q.PA.LowCutHz = 150
 	preview(q)
-	if n := e.decodes.Load(); n != 2 {
+	if n := e.decodes.Load(); n != 3 {
 		t.Errorf("pa change should decode once more, total %d", n)
 	}
 }

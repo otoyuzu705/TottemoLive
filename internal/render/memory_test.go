@@ -108,3 +108,33 @@ func BenchmarkRender10Min(b *testing.B) {
 }
 
 var _ = project.New
+
+// TestMemoryStaysFlat は、曲が長くなってもヒープのピークが増えないことを確かめる(合成音源。ffmpeg もディスクの音源も使わない)。
+// 2分と20分の曲を RenderTo(出力は捨てる)で処理して、ピークの差と上限を判定する。
+func TestMemoryStaysFlat(t *testing.T) {
+	requireLongTests(t)
+	mb := func(b uint64) float64 { return float64(b) / (1 << 20) }
+	measure := func(sec int) uint64 {
+		e := &Engine{openSource: synthOpener}
+		sink := &discardSink{}
+		var res *Result
+		peak := peakHeap(func() {
+			var err error
+			if res, err = e.RenderTo(context.Background(), synthProject(sec), nil, sink); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if sink.frames != res.Frames || sink.frames < sec*sampleRate {
+			t.Fatalf("%d s: sink got %d frames, result %d", sec, sink.frames, res.Frames)
+		}
+		t.Logf("RenderTo %2d min: HeapInuse peak %.0f MB", sec/60, mb(peak))
+		return peak
+	}
+	short, long := measure(2*60), measure(20*60)
+	if long > short && long-short >= 32<<20 {
+		t.Errorf("peak grew with the song length: %.0f MB -> %.0f MB", mb(short), mb(long))
+	}
+	if long >= 300<<20 {
+		t.Errorf("peak %.0f MB is too large", mb(long))
+	}
+}

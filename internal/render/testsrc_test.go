@@ -1,8 +1,14 @@
 package render
 
 import (
+	"context"
+	"io"
+	"math"
+	"math/rand"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"tottemolive/internal/audio"
@@ -48,3 +54,55 @@ func twoSourceProject(t *testing.T) project.Project {
 	p.Venue.Preset = "livehouse"
 	return p
 }
+
+// synthSource は、ffmpeg もディスクも使わない合成音源(決まった乱数のノイズ + 変調したトーン)。Engine.openSource に差し込む。
+type synthSource struct {
+	frames, pos int
+	rng         *rand.Rand
+}
+
+func newSynthSource(frames int, seed int64) *synthSource {
+	return &synthSource{frames: frames, rng: rand.New(rand.NewSource(seed))}
+}
+
+func (s *synthSource) Read(dst [][]float32) (int, error) {
+	n := min(len(dst[0]), s.frames-s.pos)
+	if n <= 0 {
+		return 0, io.EOF
+	}
+	for i := 0; i < n; i++ {
+		t := float64(s.pos+i) / sampleRate
+		v := float32(0.3*math.Sin(2*math.Pi*440*t)*(0.6+0.4*math.Sin(2*math.Pi*0.5*t))) + (s.rng.Float32()*2-1)*0.15
+		dst[0][i] = v
+		dst[1][i] = 0.7 * v
+	}
+	s.pos += n
+	return n, nil
+}
+
+func (s *synthSource) ExpectedFrames() int { return s.frames }
+func (s *synthSource) Close() error        { return nil }
+
+// synthOpener は、パスが "synth:<秒>" の音源を合成音源として開く関数(Engine.openSource 用)。
+func synthOpener(ctx context.Context, path string, sr int, progress func(float64)) (frameReader, error) {
+	sec, err := strconv.Atoi(strings.TrimPrefix(path, "synth:"))
+	if err != nil {
+		return nil, err
+	}
+	return newSynthSource(sec*sr, int64(sec)), nil
+}
+
+// synthProject は、長さ sec 秒の合成音源1本のプロジェクト(会場は livehouse)。
+func synthProject(sec int) project.Project {
+	p := project.New()
+	p.Sources = []project.Source{{ID: "s", Path: "synth:" + strconv.Itoa(sec), Role: project.RoleMix}}
+	p.Venue = project.DefaultVenue()
+	p.Venue.Preset = "livehouse"
+	return p
+}
+
+// discardSink は出力を捨てて、フレーム数だけ数える。
+type discardSink struct{ frames int }
+
+func (d *discardSink) Start(frames, sampleRate int) error { return nil }
+func (d *discardSink) Write(buf [][]float32) error        { d.frames += len(buf[0]); return nil }
