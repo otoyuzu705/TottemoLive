@@ -1,6 +1,7 @@
 package dsp
 
 import (
+	"context"
 	"math/rand"
 	"testing"
 )
@@ -148,5 +149,144 @@ func TestLoudnessMeterMatchesRef(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// convolvePartitionedAll は分割サイズ B を指定して、全体を分割畳み込みする(テスト用)。
+func convolvePartitionedAll(ctx context.Context, x, ir []float32, B int) ([]float32, error) {
+	out, err := runStream(ctx, newPartitionedStream(ir, B), x, [][]float32{ir})
+	if err != nil {
+		return nil, err
+	}
+	return out[0], nil
+}
+
+// streamAll は x を size ずつ c に流して、IRごとの全出力を返す。
+func streamAll(c *StreamConvolver, x []float32, size int, nIR int) [][]float32 {
+	outs := make([][]float32, nIR)
+	add := func(ys [][]float32) {
+		for k, y := range ys {
+			outs[k] = append(outs[k], y...)
+		}
+	}
+	if len(x) > 0 {
+		for _, r := range chunkRanges(len(x), size) {
+			add(c.Process(x[r[0]:r[1]]))
+		}
+	}
+	add(c.Flush())
+	return outs
+}
+
+func TestStreamConvolverMatchesRef(t *testing.T) {
+	rng := rand.New(rand.NewSource(21))
+	ctx := context.Background()
+	irLensList := []int{1, 192, 446, 512, 513, 5000, 100000}
+	for _, L := range irLensList {
+		ir := randSignal(rng, L)
+		B := shortFFTSize - L + 1
+		if L > shortIRMax {
+			B = partitionSize(L)
+		}
+		inLens := []int{0, 1, B - 1, B, B + 1, 3*B + 7, 20000}
+		for _, n := range inLens {
+			if n < 0 {
+				continue
+			}
+			x := randSignal(rng, n)
+			want, err := refConvolve(ctx, x, ir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := Convolve(ctx, x, ir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if i, ok := equalF32(got, want); !ok {
+				t.Fatalf("Convolve L=%d n=%d: differs at %d (len %d vs %d)", L, n, i, len(got), len(want))
+			}
+			for _, size := range []int{1, B - 1, B, B + 1, 65536} {
+				if size < 1 || (size == 1 && n > 3000) {
+					continue
+				}
+				outs := streamAll(NewStreamConvolver(ir), x, size, 1)
+				if i, ok := equalF32(outs[0], want); !ok {
+					t.Fatalf("stream L=%d n=%d chunk=%d: differs at %d (len %d vs %d)", L, n, size, i, len(outs[0]), len(want))
+				}
+			}
+		}
+	}
+}
+
+func TestStreamConvolverPairMatchesRef(t *testing.T) {
+	rng := rand.New(rand.NewSource(22))
+	ctx := context.Background()
+	for _, c := range []struct{ na, nb int }{{192, 192}, {100, 400}, {1, 512}, {192, 3000}, {2000, 3000}} {
+		a, b := randSignal(rng, c.na), randSignal(rng, c.nb)
+		for _, n := range []int{0, 1, 3000, 12345} {
+			x := randSignal(rng, n)
+			wa, wb, err := refConvolvePair(ctx, x, a, b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ga, gb, err := ConvolvePair(ctx, x, a, b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if i, ok := equalF32(ga, wa); !ok {
+				t.Fatalf("pair %+v n=%d A differs at %d", c, n, i)
+			}
+			if i, ok := equalF32(gb, wb); !ok {
+				t.Fatalf("pair %+v n=%d B differs at %d", c, n, i)
+			}
+			for _, size := range []int{1000, 4097, 65536} {
+				outs := streamAll(NewStreamConvolver(a, b), x, size, 2)
+				if i, ok := equalF32(outs[0], wa); !ok {
+					t.Fatalf("stream pair %+v n=%d chunk=%d A differs at %d", c, n, size, i)
+				}
+				if i, ok := equalF32(outs[1], wb); !ok {
+					t.Fatalf("stream pair %+v n=%d chunk=%d B differs at %d", c, n, size, i)
+				}
+			}
+		}
+	}
+}
+
+// Flush の長さ: 入力 + len(ir) - 1、入力0なら空。Process の出力は入力より先に出ない。
+func TestStreamConvolverLengths(t *testing.T) {
+	rng := rand.New(rand.NewSource(23))
+	for _, L := range []int{1, 100, 600, 9000} {
+		ir := randSignal(rng, L)
+		for _, n := range []int{0, 1, 500, 5000, 70000} {
+			c := NewStreamConvolver(ir)
+			got := 0
+			fed := 0
+			for _, r := range chunkRanges(n, 777) {
+				if n == 0 {
+					break
+				}
+				fed += r[1] - r[0]
+				got += len(c.Process(make([]float32, r[1]-r[0]))[0])
+				if got > fed {
+					t.Fatalf("L=%d: output %d ahead of input %d", L, got, fed)
+				}
+			}
+			got += len(c.Flush()[0])
+			want := 0
+			if n > 0 {
+				want = n + L - 1
+			}
+			if got != want {
+				t.Errorf("L=%d n=%d: total %d want %d", L, n, got, want)
+			}
+		}
+	}
+}
+
+func TestStreamConvolverCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Convolve(ctx, make([]float32, 200000), make([]float32, 9000)); err == nil {
+		t.Error("expected cancellation error")
 	}
 }

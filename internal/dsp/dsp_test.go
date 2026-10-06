@@ -97,7 +97,7 @@ func TestConvolvePartitionedAnyBlock(t *testing.T) {
 	rng := rand.New(rand.NewSource(2))
 	x, h := randSignal(rng, 40000), randSignal(rng, 9000)
 	for _, B := range []int{1024, 2048, 4096, 8192, 16384} {
-		got, err := convolvePartitioned(context.Background(), x, h, B)
+		got, err := convolvePartitionedAll(context.Background(), x, h, B)
 		if err != nil {
 			t.Fatal(err)
 		}
