@@ -113,7 +113,8 @@ func newReverbProc(pp *prepared, ir [][]float32) *reverbProc {
 	}
 }
 
-// Push はバスの続き(ステレオ)を与える。
+// Push はバスの続き(ステレオ)を与える。バスは Push の間だけ読む(返った後は触らない)。
+// 呼び出し側(パス1)は、次のチャンクの先読みを別の面に書いて Push と重ねるので、この不変条件が前提になる。
 func (r *reverbProc) Push(bus [][]float32) {
 	mono := r.rad.Process(bus)
 	var y [2][]float32

@@ -17,7 +17,7 @@ type Compressor struct {
 	on         bool
 	att, rel   float64
 	slope, thr float64
-	gr         float64 // 現在のゲインリダクション(dB, 正)
+	gr         float64   // 現在のゲインリダクション(dB, 正)
 	work       []float64 // Process の作業用(1ブロックぶん。target → ゲインリダクションの順に使い回す)
 }
 
