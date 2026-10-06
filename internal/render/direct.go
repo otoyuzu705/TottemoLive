@@ -160,6 +160,8 @@ func (d *directProc) drain() {
 }
 
 // speakerFeed はスピーカー i への入力(スピーカーが1本ならバスの左右平均、2本以上ならチャンネルを順に割り当てる)。
+// 2本以上のときはバスのスライスをそのまま返すので、返したものは Push の間だけ読むこと
+// (バスの置き場は、次のチャンクの先読みで上書きされうる)。
 func speakerFeed(bus [][]float32, i, count int) []float32 {
 	if count == 1 {
 		m := make([]float32, len(bus[0]))

@@ -17,8 +17,15 @@ type Compressor struct {
 	on         bool
 	att, rel   float64
 	slope, thr float64
-	gr         float64 // 現在のゲインリダクション(dB, 正)
+	gr         float64   // 現在のゲインリダクション(dB, 正)
+	work       []float64 // Process の作業用(1ブロックぶん。target → ゲインリダクションの順に使い回す)
 }
+
+// コンプを掛けるときの1ブロックのサンプル数(作業用配列の大きさ)と、並列化するときの1区間の最小サンプル数。
+const (
+	compBlock  = 65536
+	compMinPer = 1024
+)
 
 // NewCompressor はコンプレッサーを返す。Ratio が 1 以下なら Process は何もしない。
 func NewCompressor(sr int, p CompParams) *Compressor {
@@ -33,26 +40,50 @@ func NewCompressor(sr int, p CompParams) *Compressor {
 }
 
 // Process は buf(チャンネル別)にその場でコンプを掛ける。
+//
+// サンプルごとの処理を3段に分ける。状態を持つのは2段目(ゲインリダクション gr の漸化式)だけなので、
+// 1・3段目はサンプル方向に並列に回す(各サンプルは自分の値だけで決まる)。式は元の1重ループと同じなので、
+// 並列度・区切り方に依らず結果はビット単位で同じ。
+//
+//	(1) 各サンプルの peak → LinToDb → target(並列)
+//	(2) target から gr を順に求める(直列。軽い)
+//	(3) DbToLin(-gr) を各チャンネルに掛ける(並列)
 func (c *Compressor) Process(buf [][]float32) {
 	if len(buf) == 0 || !c.on {
 		return
 	}
 	n := len(buf[0])
-	for i := 0; i < n; i++ {
-		peak := 0.0
-		for _, ch := range buf {
-			peak = math.Max(peak, math.Abs(float64(ch[i])))
+	if len(c.work) < min(n, compBlock) {
+		c.work = make([]float64, min(n, compBlock))
+	}
+	for from := 0; from < n; from += compBlock {
+		m := min(compBlock, n-from)
+		tg := c.work[:m]
+		parallelFor(m, compMinPer, func(lo, hi int) {
+			for i := lo; i < hi; i++ {
+				peak := 0.0
+				for _, ch := range buf {
+					peak = math.Max(peak, math.Abs(float64(ch[from+i])))
+				}
+				tg[i] = math.Max(LinToDb(peak)-c.thr, 0) * c.slope
+			}
+		})
+		for i, target := range tg {
+			if target > c.gr {
+				c.gr = c.att*c.gr + (1-c.att)*target
+			} else {
+				c.gr = c.rel*c.gr + (1-c.rel)*target
+			}
+			tg[i] = c.gr
 		}
-		target := math.Max(LinToDb(peak)-c.thr, 0) * c.slope
-		if target > c.gr {
-			c.gr = c.att*c.gr + (1-c.att)*target
-		} else {
-			c.gr = c.rel*c.gr + (1-c.rel)*target
-		}
-		g := float32(DbToLin(-c.gr))
-		for _, ch := range buf {
-			ch[i] *= g
-		}
+		parallelFor(m, compMinPer, func(lo, hi int) {
+			for i := lo; i < hi; i++ {
+				g := float32(DbToLin(-tg[i]))
+				for _, ch := range buf {
+					ch[from+i] *= g
+				}
+			}
+		})
 	}
 }
 
@@ -69,9 +100,18 @@ func Saturate(buf [][]float32, drive float64) {
 		return
 	}
 	k := 1 + drive*(driveMaxK-1)
-	for _, ch := range buf {
-		for i, v := range ch {
-			ch[i] = float32(math.Tanh(k*float64(v)) / k)
-		}
+	if len(buf) == 0 {
+		return
 	}
+	// 各サンプルは状態を持たないので、サンプル方向に並列に回してよい(結果は変わらない)
+	parallelFor(len(buf[0]), satMinPer, func(lo, hi int) {
+		for _, ch := range buf {
+			for i := lo; i < hi; i++ {
+				ch[i] = float32(math.Tanh(k*float64(ch[i])) / k)
+			}
+		}
+	})
 }
+
+// Saturate を並列化するときの1区間の最小サンプル数。
+const satMinPer = 4096

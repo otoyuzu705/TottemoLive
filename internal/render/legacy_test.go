@@ -369,10 +369,11 @@ func TestLegacyMatchesRender(t *testing.T) {
 				}
 				name := fmt.Sprintf("%s chunk=%d", tc.name, chunk)
 				maxDiff, n := compareAudio(t, name, got.Audio, want)
-				if maxDiff > 1e-6 {
+				// 出力は旧実装とビット単位で一致する(1サンプルでも違えば失敗)
+				if n > 0 || maxDiff != 0 {
 					t.Errorf("%s: max|diff| %g (%d samples differ)", name, maxDiff, n)
 				}
-				if d := math.Abs(got.LUFS - wantLufs); d > 1e-9 {
+				if got.LUFS != wantLufs {
 					t.Errorf("%s: LUFS %v vs %v", name, got.LUFS, wantLufs)
 				}
 				if got.Frames != len(want[0]) {

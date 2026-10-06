@@ -116,6 +116,12 @@ func (w *wavSink) close() error {
 	return w.enc.Close()
 }
 
+// busRead は、バスの先読みした1回ぶんの Read の結果。
+type busRead struct {
+	n   int
+	err error
+}
+
 // busReader はバスを区切って読み出すもの(音源を流す liveBus か、PA段のスプール)。
 type busReader interface {
 	// Read は dst を満たすまで読む。終わりは 0, io.EOF。
@@ -310,6 +316,7 @@ func (e *Engine) renderTo(ctx context.Context, p project.Project, prog Progress,
 		}
 	}()
 	var busMeter *dsp.LoudnessMeter
+	var pend chan busRead // 先読み中のバスの Read の応答(無ければ nil)
 	if needBus {
 		if paSp != nil {
 			r, err := paSp.open(0)
@@ -339,6 +346,15 @@ func (e *Engine) renderTo(ctx context.Context, p project.Project, prog Progress,
 			}
 		}
 	}
+
+	// 先読み中のバスの Read があれば、その応答を必ず受け取ってから抜ける。この defer は上の
+	// defer r.Close() / defer live.close() より後に登録してあるので、それらより先に実行される
+	// (Read の最中にデコーダーを閉じない)。
+	defer func() {
+		if pend != nil {
+			<-pend
+		}
+	}()
 
 	// 直接音・残響の処理器と、当たった段のスプールの読み出し
 	var dproc *directProc
@@ -414,21 +430,45 @@ func (e *Engine) renderTo(ctx context.Context, p project.Project, prog Progress,
 	srcErr := func() error { return errors.Join(spoolErr(dsrc), spoolErr(rsrc)) }
 
 	if needBus {
-		buf := [][]float32{make([]float32, chunk), make([]float32, chunk)}
+		// バスの読み出し(デコード + PA。またはPA段のスプール)は、1つ先のチャンクを先読みして、
+		// 今のチャンクの 直接音・残響・スペクトラム の処理と重ねる(2段のパイプライン)。
+		// バスの置き場は2面で交互に使い、先読みは「いま処理しているのと別の面」に書く。
+		// 直接音・残響・スペクトラムは、バスを Push の間だけ読む(Push が返った後は触らない)ので、
+		// 次の次のチャンクが同じ面を上書きしてよい。先読みは常に1つだけ(1回の要求に1回の応答)で、
+		// バスのメーター・PAのスプールへの書き込みは、このゴルーチン(メイン)がチャンクの順に行う。
+		var bufs [2][][]float32
+		for i := range bufs {
+			bufs[i] = [][]float32{make([]float32, chunk), make([]float32, chunk)}
+		}
+		readFace := 0 // 次に先読みを書く面
+		start := func() {
+			dst := bufs[readFace]
+			ch := make(chan busRead, 1)
+			pend = ch
+			go func() {
+				n, err := busR.Read(dst)
+				ch <- busRead{n, err}
+			}()
+		}
+		start()
 		frames := 0
 		for {
 			if err := ctx.Err(); err != nil {
 				return abort(err)
 			}
-			n, err := busR.Read(buf)
-			if err == io.EOF {
+			res := <-pend
+			pend = nil
+			if res.err == io.EOF {
 				break
 			}
-			if err != nil {
-				return abort(err)
+			if res.err != nil {
+				return abort(res.err)
 			}
+			n, face := res.n, readFace
+			readFace ^= 1
+			start() // 次のチャンクの先読み(いまの面は触らない)
 			frames += n
-			bus := [][]float32{buf[0][:n], buf[1][:n]}
+			bus := [][]float32{bufs[face][0][:n], bufs[face][1][:n]}
 			if paw != nil {
 				busMeter.Write(bus)
 				if err := paw.Write(bus); err != nil {

@@ -60,6 +60,8 @@ jobs:
         run: |
           go test -tags webkit2_41 ./... -count=1 -timeout 10m
           go vet -tags webkit2_41 ./...
+      - name: Race detector for parallel DSP
+        run: go test -race -short ./internal/dsp ./internal/render -count=1 -timeout 25m
       - name: Install matching Wails CLI
         run: |
           wails_version=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)
