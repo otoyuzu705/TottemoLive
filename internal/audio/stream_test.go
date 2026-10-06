@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 )
 
 // refDecode は、ffmpegの出力を全部読んでから変換する(流し読みにする前のデコードと同じ結果になるはずの参照)。
@@ -294,5 +295,35 @@ func TestPeaksMatchesFullDecode(t *testing.T) {
 				t.Fatalf("width %d col %d: got [%v %v], want [%v %v]", width, i, got[2*i], got[2*i+1], lo, hi)
 			}
 		}
+	}
+}
+
+// 長さ0の dst を渡しても止まらず、続きの読み出しに影響しない。
+func TestDecoderReadZeroLength(t *testing.T) {
+	if !Available() {
+		t.Skip("ffmpeg がないためスキップ")
+	}
+	path := makeTone(t, 1)
+	d, err := OpenDecoder(context.Background(), path, 48000, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		n, err := d.Read([][]float32{{}, {}})
+		if n != 0 || err != nil {
+			t.Errorf("zero-length read: %d %v", n, err)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("zero-length Read blocked")
+	}
+	buf := [][]float32{make([]float32, 1000), make([]float32, 1000)}
+	if n, err := d.Read(buf); n != 1000 || err != nil {
+		t.Errorf("read after zero-length read: %d %v", n, err)
 	}
 }

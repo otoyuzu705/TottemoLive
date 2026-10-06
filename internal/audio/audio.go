@@ -168,6 +168,9 @@ func (d *Decoder) ExpectedFrames() int { return d.expected }
 // (キャンセルされていれば ctx.Err())を返す。
 func (d *Decoder) Read(dst [][]float32) (int, error) {
 	want := len(dst[0])
+	if want == 0 { // 何も読まない(ffmpegの終了待ちで止まらないように、先に返す)
+		return 0, nil
+	}
 	fb := 4 * d.channels
 	n := 0
 	for n < want {
