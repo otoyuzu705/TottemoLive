@@ -236,6 +236,9 @@ func (d *Decoder) Close() error {
 	if !d.finished {
 		d.finished = true
 		d.err = io.ErrClosedPipe
+		// 先に出力のパイプを閉じる。shim 経由で起動した本物の ffmpeg は Kill では止まらず、書き込みで詰まったまま残る。
+		// 読む側を閉じれば、書き込みが失敗して終了する
+		_ = d.stdout.Close()
 		_ = d.cmd.Process.Kill()
 		_ = d.cmd.Wait()
 	}
@@ -399,8 +402,9 @@ func (e *WAVEncoder) Abort() {
 		return
 	}
 	e.done = true
-	_ = e.cmd.Process.Kill()
+	// 先に入力を閉じる(shim 経由の本物の ffmpeg は Kill では止まらないが、入力が終われば終了する)
 	e.stdin.Close()
+	_ = e.cmd.Process.Kill()
 	_ = e.cmd.Wait()
 }
 
