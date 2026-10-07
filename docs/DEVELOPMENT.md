@@ -116,7 +116,7 @@ flowchart LR
 
 - Wailsに依存してよいのは`main.go`と`app.go`だけです。`internal/`以下はWailsをimportしないので、同じエンジンをCLIから呼べます
 - デコードから書き出しまで、処理はすべてGo側の`internal/render`のジョブが実行します。フロントは表示と操作だけです
-- cgoとPythonをGoのビルドに持ち込みません。FFmpegとDemucsは子プロセスで呼び、起動は必ず`internal/procutil.HideConsole`を通します（GUIのリリースビルドでコンソール窓が出ないように）
+- cgoとPythonをGoのビルドに持ち込みません。FFmpegとDemucsは子プロセスで呼び、起動は必ず`internal/procutil.HideConsole`を通します（GUIのリリースビルドでコンソール窓が出ないように。あわせて`WaitDelay`も設定し、ChocolateyやScoopのshim経由のffmpegを止めたときに`Wait`が固まらないようにしています）
 - 音作りパラメーターは`internal/params`の`ParamSpec`の表が正です。音作りパネルは`ListParams()`から自動生成されるので、パラメーターを足すときはProjectの構造体と表に1行足すだけで、フロントのコードは変えません
 - プレビューは書き出しと同じ処理を曲全体に対して行います（軽量版の経路は作らない）。例外は先行プレビュー（再生位置の周辺約30秒を同じ処理で先に作る）だけです
 - プレビューの各段（PA・直接音・残響）の出力はディスクのスプールにキャッシュし、キャッシュキーは「その段が読むパラメーターの値 + 上流の段のキー」です。段が読むパラメーターを増やしたら、キーにも含めます
