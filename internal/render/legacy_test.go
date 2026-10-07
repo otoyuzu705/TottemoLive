@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -20,6 +21,20 @@ import (
 	"tottemolive/internal/spatial"
 	"tottemolive/internal/venue"
 )
+
+// bitExactArch は、旧実装の写しと完全に同じ(ビット一致の)結果を要求できる環境か。
+// arm64 は x*y+z を FMA(丸めが1回)に融合するコンパイラで、式が同じでも、融合されるかどうかが
+// コードの置き場所で変わり、1サンプルあたり1 ULP(約6e-8)ずれることがある。amd64(CI・Windows)ではビット一致を要求し、
+// それ以外では丸め誤差の範囲(1e-6、-120 dBFS。LUFSは1e-9)を許す。
+func bitExactArch() bool { return runtime.GOARCH == "amd64" }
+
+// sameAsLegacy は、旧実装との差(最大の絶対値 maxDiff、不一致のサンプル数 n)が許容の範囲内か。
+func sameAsLegacy(maxDiff float64, n int) bool {
+	if bitExactArch() {
+		return n == 0 && maxDiff == 0
+	}
+	return maxDiff <= 1e-6
+}
 
 // legacyRender は現行の run をキャッシュなし・進捗なしで実行した結果(音声と出力の統合ラウドネス)を返す。
 func legacyRender(ctx context.Context, p project.Project) ([][]float32, float64, error) {
@@ -370,10 +385,10 @@ func TestLegacyMatchesRender(t *testing.T) {
 				name := fmt.Sprintf("%s chunk=%d", tc.name, chunk)
 				maxDiff, n := compareAudio(t, name, got.Audio, want)
 				// 出力は旧実装とビット単位で一致する(1サンプルでも違えば失敗)
-				if n > 0 || maxDiff != 0 {
+				if !sameAsLegacy(maxDiff, n) {
 					t.Errorf("%s: max|diff| %g (%d samples differ)", name, maxDiff, n)
 				}
-				if got.LUFS != wantLufs {
+				if d := math.Abs(got.LUFS - wantLufs); (bitExactArch() && got.LUFS != wantLufs) || d > 1e-9 {
 					t.Errorf("%s: LUFS %v vs %v", name, got.LUFS, wantLufs)
 				}
 				if got.Frames != len(want[0]) {
@@ -434,7 +449,7 @@ func TestOriginalMatchesLegacy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if m, n := compareAudio(t, "original", got.Audio, want); m != 0 || n != 0 {
+		if m, n := compareAudio(t, "original", got.Audio, want); !sameAsLegacy(m, n) {
 			t.Fatalf("chunk %d: original differs", chunk)
 		}
 	}
