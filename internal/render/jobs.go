@@ -75,3 +75,16 @@ func orDefault(s, d string) string {
 	}
 	return s
 }
+
+// CancelAll は実行中のジョブをすべて中断する(アプリの終了時)。
+func (j *Jobs) CancelAll() {
+	j.mu.Lock()
+	cs := make([]context.CancelFunc, 0, len(j.cancels))
+	for _, c := range j.cancels {
+		cs = append(cs, c)
+	}
+	j.mu.Unlock()
+	for _, c := range cs {
+		c()
+	}
+}

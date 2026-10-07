@@ -12,7 +12,8 @@ Go、Node.js、Pythonは、配布されたアプリを使うだけなら不要�
 | TottemoLive-macos-amd64.zip | Intel Mac |
 | TottemoLive-macos-arm64.zip | Apple Silicon Mac（M1以降） |
 
-GitHub Releases、またはGitHub Actionsの「Release Build」の成功した実行のArtifactsから取得します。
+GitHub ReleasesのAssetsから対象OSのZIPを取得します。公開後にCIがビルドして自動添付するため、配布ZIPが揃うまではRelease Buildの完了をお待ちください。
+手動ビルドの成果物はGitHub Actionsの「Release Build」の成功した実行のArtifactsから取得できます。
 Actionsのartifact自体もZIPなので、まず外側を展開し、中のTottemoLive-*.zipも展開してください。
 OSの実際の対応範囲は利用するWailsとGoに依存します。リリース用ワークフローではWindows Server 2022とmacOS 15で検証します。通常CIのLinux成果物はビルド検証用です。
 
@@ -90,6 +91,33 @@ Windowsの例：
 ```powershell
 $env:TOTTEMOLIVE_DEMUCS = 'C:\実際の仮想環境\Scripts\demucs.exe'
 ```
+
+## ディスクキャッシュ（一時ファイル）
+
+プレビューは、処理の途中結果（PA・直接音・残響の3段）を一時ファイルに置いて、音作りの調整を速くします。
+曲の長さ1分あたり約70MB、長い曲では数GBのディスクを使います。
+アプリの終了時に消え、異常終了で残ったものは次の起動時に掃除されます。
+
+アプリの設定ダイアログ（ヘッダーの「設定」）で、次を変えられます。
+
+- キャッシュを使う：オフにすると、段の途中結果を保持せず、プレビューは毎回すべて計算し直します（遅くなります）。処理に必須の使い捨ての一時ファイルは、オフでも作られ、処理が終わると消えます。
+- 置き場所：既定はOSの一時フォルダ。空き容量の大きいドライブに変えられます。絶対パスで、書き込めるフォルダを指定してください（無ければ作ります）。
+- 「キャッシュを消去」：保持している途中結果を今すぐ捨てます。
+
+設定は、ユーザー設定フォルダ（Windowsは`%AppData%\TottemoLive`、Macは`~/Library/Application Support/TottemoLive`）の`settings.json`に保存されます。
+
+CLIでは、環境変数で同じ指定ができます。
+
+```sh
+export TOTTEMOLIVE_CACHE_DIR='/大きいドライブ/tottemolive-tmp'   # 一時ファイルの置き場所（絶対パス）
+export TOTTEMOLIVE_CACHE=off                                       # キャッシュを使わない（render は元々使いません）
+```
+
+```powershell
+$env:TOTTEMOLIVE_CACHE_DIR = 'D:\tottemolive-tmp'
+```
+
+`render`はキャッシュを使いませんが、使い捨てのスプールの置き場所には`TOTTEMOLIVE_CACHE_DIR`が効きます。
 
 ## チェックサム
 

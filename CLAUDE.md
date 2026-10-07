@@ -8,6 +8,8 @@ M1(エンジンとCLI)とM2(Wails骨格・音作りパネル・曲全体のプ�
 
 作るもの: 楽曲音源を「指定した会場・座席で聴いているような」バイノーラル音源に変換して書き出すデスクトップアプリ(アプリ名は `TottemoLive`、Goモジュール名は `tottemolive`)。Go + Wails v2、フロントは Svelte + TypeScript。
 
+アプリの設定(ディスクキャッシュの使用・置き場所)は `os.UserConfigDir()/TottemoLive/settings.json`。設定ダイアログ(ヘッダーの「設定…」)と `App` の `GetSettings` / `SetSettings` / `GetCacheInfo` / `ClearCache` / `PickCacheDir`、CLIの環境変数 `TOTTEMOLIVE_CACHE_DIR` / `TOTTEMOLIVE_CACHE=off` から使う。
+
 M1時点の暫定: 実測のHRIR・会場IRは再配布条件が未確認で同梱していないため、いずれも合成で代用している(HRIRは球形頭部モデル `spatial/synthetic.go`、会場IRは残響時間からの合成 `venue.BuildIR`)。実素材を同梱するときは `assets/` に置き、`spatial.LoadSet` などを差し替える。
 
 ## コマンド
@@ -65,19 +67,22 @@ M1 エンジンとCLI(済) → M2 Wails骨格と音作りパネル・プレビ�
 
 - プレビューは書き出しと同じ処理を曲全体に対して行う。品質を落とした軽量版の経路を作らない(プレビューで決めた音が書き出しで変わるため)
 - 例外は先行プレビュー(`Engine.PreviewWindow`、`internal/render/window.go`)。曲全体の処理が終わるまでの間に聴けるよう、再生位置の周辺の約30秒を同じ処理で先に作る。直接音・残響は `directCompute` / `reverbCompute` を窓に対して呼ぶだけで、計算は曲全体と同じ(窓の結果が曲全体の同じ範囲と一致することをテストしている)。違うのはラウドネス調整のゲインを推定する点だけ。直接音・残響の計算を変えるときは、窓も同じ関数を通ることを崩さない。窓の結果は段のキャッシュに入れない(PA段だけは曲全体を処理して共有する)
-- `internal/render` はプレビューの各段の出力をキャッシュする。各段のキャッシュキーは「その段が読むパラメーターの値 + 上流の段のキー」。段が読むパラメーターを増やしたらキーにも含めること(漏れると値を変えても音が変わらないバグになる)
-- 各段の出力の長さは残響パラメーターの上限で固定し、ミックス前に実際の長さへ切り詰める(IRの長さをキャッシュキーに入れない)
+- `internal/render` はプレビューの各段の出力をキャッシュする(スロットは inputLevel / pa / paSpectrum / direct / reverb。pa・direct・reverb は一時ファイルのスプール、他はメモリ)。ディスクキャッシュを使うか・置き場所はアプリの設定(`internal/settings`、`cacheEnabled` / `cacheDir`。音作りパラメーターではないので `ParamSpec` には入れない)で決まり、`render.EngineConfig` で渡す。無効のときは段もメモリのmemoも保持せず毎回全段を計算し直す(使い捨てスプールは作って、終われば消す)。一時ファイルの置き場所に `os.TempDir()` を直書きしない(Engine・使い捨てスプール・`Store`・`CleanStaleTempIn` は設定の置き場所を使う。置き場所のフォルダ自体は消さず、その下の `tottemolive-*` だけ消す)。設定変更の反映(実行中のプレビュー系ジョブの中断、書き出しは中断しない)は設計書の「アプリの設定」節を参照。作業ディレクトリは使うたびに存在を確かめて作り直し(他から消されても動く)、キャッシュ当たりのスプールのファイルが消えていたらキャッシュから外して再計算する。書き出しは同じフォルダの一時名(`out.partial-N.wav`)へ書き、成功したときだけ置き換える(中断・失敗では既存の出力に触らない)
+- 各段のキャッシュキーは「その段が読むパラメーターの値 + 上流の段のキー」(`render.go` の `*KeyFor`)。段が読むパラメーターを増やしたらキーにも含めること(漏れると値を変えても音が変わらないバグになる)
+- 各段の出力は自然な長さ(直接音 = 曲 + 遅延 + HRIRの尾、残響 = 曲 + IRの長さ)で持ち、ミックスで曲の出力の長さに合わせる(足りない所は無音、超える所は捨てる)。IRの長さをキャッシュキーに入れない(残響を動かしても直接音は再計算しない)
 - ラウドネスも曲全体で測るので、プレビューと書き出しは同じ音量になる
 - 内部表現はfloat32のチャンネル別バッファ。畳み込みの分割単位は最小1024(下記)
-- 畳み込みはFFT(overlap-save)。FFTは `gonum.org/v1/gonum/dsp/fourier`。長いIR(会場IR)は一様分割で、分割サイズはIR長/16(2のべき乗、1024〜8192)。オフラインで遅延の制約がないので、1024固定より大きいほうが速い(会場IRで約2.3倍)。短いIR(512タップ以下、HRIR)は1回のFFTで処理する。同じ入力を左右のIRで畳み込むときは `dsp.ConvolvePair` で入力のFFTを共有する
-- 性能・メモリ: 4分の曲で、デコード結果はキャッシュしない(必要な段だけがデコードする)、バスは直接音か残響の再計算時だけ作る、キーが変わる段の古い出力は先に捨てる。段を足すときもこれらを崩さない
+- 畳み込みはFFT(overlap-save、入力を区切って与えられる `dsp.StreamConvolver`)。FFTは `gonum.org/v1/gonum/dsp/fourier`。長いIR(会場IR)は一様分割で、分割サイズはIR長/16(2のべき乗、1024〜8192)。オフラインで遅延の制約がないので、1024固定より大きいほうが速い(会場IRで約2.3倍)。短いIR(512タップ以下、HRIR)は1回のFFTで処理する(overlap-saveのブロックは完全に独立なので、1回の Process に入る16〜19ブロックもワーカーに分けて並列に処理する)。同じ入力を左右のIRで畳み込むときは、`dsp.NewStreamConvolver(irL, irR)`(`ConvolvePair`)で共有する: 短いIRは入力のFFT、長いIR(分割サイズが同じ。会場IRの左右)は周波数領域遅延線(入力のスペクトル)ごと共有し、IRごとに持つのはIRのスペクトルだけ。長いIRは1回の Process に入るブロックをワーカーに分けて並列に処理する(FFTインスタンスはワーカーごと。gonumのFFTはゴルーチン安全でない)。結果は並列度に依らずビット一致
+- 流し処理(ストリーミング): 曲を65536フレームのチャンクに区切って流し、曲全体を一度にメモリに載せない。曲の長さに依らずヒープはほぼ一定(合成音源で2分も20分も、書き出し約60MB・プレビュー約100MB)。各段は状態を持つ処理器で、結果は曲全体を一度に処理した場合と、チャンクの大きさに依らずビット単位で一致する。この一致を保つため、(1) 状態を持つ処理のブロック分けは曲頭からの絶対位置で決める(畳み込みのブロック、LUFSの100ms区間、スペクトラムのフレーム位置)、(2) 加算の順序を変えない(バスは音源の順、直接音はスピーカー・サブの順、ミックスは直接音が先)、(3) 信号の端(範囲外)の扱いを変えない。曲全体を扱う従来の関数(`dsp.Convolve`・`TruePeakLimit`・`IntegratedLUFS` など)は、処理器に全体を流す薄い包みで、処理前の全体処理の写し(`reference_test.go`・`legacy_test.go`)とのビット一致をテストしている。処理を変えるときは、このテストが通ることを確かめる
+- 性能・メモリ: デコード結果はキャッシュしない(音源はffmpegから少しずつ受ける)、バスは直接音・残響・帯域レベルのどれかを再計算するときだけ読む、キーが変わる段の古いスプールは先に捨てる。段の出力のスプールは参照カウントで管理し、読み手を閉じてから release する(Windowsは開いているファイルを消せない)。計算が失敗・中断したら書きかけを消す。段を足すときもこれらを崩さない。長い曲のメモリ測定は `TOTTEMOLIVE_LONG_TESTS=1 go test ./internal/render -run TestMemory`
 - デコードはffmpegから生PCMをパイプで受ける(形式ごとの純Goデコーダは使わない)
-- 音源ごとの処理はgoroutineで並列、ミックス段で合流。ジョブは `context.Context` でキャンセル可能にする
+- パス1は、次のチャンクのバス読み出し(デコード + PA)を、いまのチャンクの直接音・残響・スペクトラムの処理と重ねる(2段のパイプライン、先読みは常に1つ)。バスの置き場は2面で交互に使うので、`directProc.Push` / `reverbProc.Push` / `speakerFeed` はバスを Push の間だけ読むこと(返った後に触らない)。先読みの未回収の結果は、デコーダーを閉じる前に必ず受け取る(`renderTo` の defer の順序を崩さない)
+- 音源ごとの処理はgoroutineで並列、ミックス段で合流。1本の中も、状態を持たない部分(コンプのサンプルごとの計算、歪み、左右チャンネルのフィルタ、残響入力のLR4)は並列に回す。並列度・区切り方で結果を変えない(ビット一致。`dsp.parallelFor`)。ジョブは `context.Context` でキャンセル可能にする
 - 出力は48kHz / 24bit ステレオWAV
 
 **Wails連携**
 
-- 生PCMや大きな配列をバインディングの戻り値で返さない(JSONが巨大になる)。プレビューはGo側でWAVをメモリに保持し、AssetServerの `Handler` で `/preview/{id}.wav` として配信、フロントは `<audio>` で再生する。シークのためRangeリクエスト対応が必須
+- 生PCMや大きな配列をバインディングの戻り値で返さない(JSONが巨大になる)。プレビューはGo側でWAVを一時ファイルへ少しずつ書いて(`render.PreviewWAV`)保持し、AssetServerの `Handler` で `/preview/{id}.wav` として配信、フロントは `<audio>` で再生する。シークのためRangeリクエスト対応が必須(`http.ServeContent`)。配信中のファイルは、保持の対象から外れても配信が終わるまで消さない。アプリ終了時(`OnShutdown` → `App.shutdown`)に一時ファイルを全部消す。Wails v2 のWindows版はハンドラの応答を全部メモリに貯めるので、WAVを1回のGETで取ると一時的にWAVの1〜2倍のメモリを使う(フロントのRange分割取得は未実装)
 - 波形はmin/maxピーク列だけを返し、描画はフロントのcanvas
 - 進捗は `runtime.EventsEmit` で通知: `render:progress`(`{jobId, stage, ratio}`、stageは decode / process / encode)、`render:done`、`render:error`
 - TS側の型は手書きせず、Wailsのバインディング生成に任せる(Goの構造体が正)。`frontend/wailsjs` は生成物だがコミットする。Goの公開メソッドや構造体を変えたら `wails generate module`(`wails dev`/`wails build` でも自動)で再生成すること
@@ -110,5 +115,6 @@ GitHub Actionsの `CI` と `Release Build` は、両方とも `workflow_dispatch
 通常CIは `.github/workflows/ci.yml` でUbuntuだけを使って検証・GUIビルドする。
 Windows x64、Mac Intel、Mac Apple Siliconのネイティブビルドは、リリース用の `.github/workflows/build.yml` に限定する。
 リリース用ワークフローは、まずUbuntuのCIを再利用して実行し、成功後に各OSをビルドする。
-GitHub Releasesの公開イベントと手動実行でビルドとartifact保存まで。タグのpushだけでは配布ビルドしない。タグ付け、GitHub Releasesの作成・添付・公開はユーザーが行う。
+タグ付けとGitHub Releasesの作成・公開はユーザーが行う。公開イベントではビルド・artifact保存後、ZIPとSHA256SUMSをそのリリースのAssetsへ添付する。
+手動実行はartifact保存まで。タグのpushだけでは配布ビルドしない。Assets添付ジョブだけcontents: writeを持ち、リリースの公開状態や本文は変更しない。
 操作と開発環境は `README.md`、配布物の導入とFFmpegの設定は `docs/INSTALL.md` を参照する。

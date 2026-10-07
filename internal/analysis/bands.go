@@ -60,55 +60,128 @@ func blackman(n int) []float64 {
 	return w
 }
 
-// Compute は mono(サンプルレート sr)を、HopSec ごとのフレームについて帯域レベルにする。
-// フレームは中心を f×HopSec にそろえ、信号の外は無音として扱う。フレームは独立なので並列に計算する。
-func Compute(ctx context.Context, mono []float32, sr int) (*Series, error) {
-	hop := int(math.Round(HopSec * float64(sr)))
-	frames := (len(mono) + hop - 1) / hop
-	s := &Series{HopSec: float64(hop) / float64(sr), Bands: NumBands(), Frames: frames, Data: make([]float32, frames*NumBands())}
-	if frames == 0 {
-		return s, nil
+// Analyzer は mono(サンプルレート sr)を、信号を区切って順に Write しながら、HopSec ごとのフレームについて
+// 帯域レベルにする。フレーム f は [f×hop-WindowSize/2, f×hop+WindowSize/2) の窓で、中心は f×HopSec。
+// 信号の外は無音として扱う。窓がそろったフレームから計算し(フレームは独立なので並列)、
+// 結果は、全体を一度に計算した場合と、区切り方に依らずビット単位で一致する。
+type Analyzer struct {
+	sr      int
+	hop     int
+	win     []float64
+	hist    []float32 // 次のフレームの窓の左端から現在までの入力
+	base    int       // hist[0] の絶対位置
+	total   int       // 受け取ったフレーム数(サンプル数)
+	next    int       // 次に計算するフレーム
+	data    []float32
+	workers []*analysisWorker
+}
+
+type analysisWorker struct {
+	fft   *fourier.FFT
+	frame []float64
+	coef  []complex128
+	power []float64
+}
+
+// NewAnalyzer はサンプルレート sr の信号用のアナライザーを返す。
+func NewAnalyzer(sr int) *Analyzer {
+	a := &Analyzer{sr: sr, hop: int(math.Round(HopSec * float64(sr))), win: blackman(WindowSize)}
+	for range runtime.GOMAXPROCS(0) {
+		a.workers = append(a.workers, &analysisWorker{
+			fft:   fourier.NewFFT(WindowSize), // FFTは共有しない
+			frame: make([]float64, WindowSize),
+			coef:  make([]complex128, WindowSize/2+1),
+			power: make([]float64, WindowSize/2+1),
+		})
 	}
-	win := blackman(WindowSize)
-	workers := runtime.GOMAXPROCS(0)
-	chunk := (frames + workers - 1) / workers
-	var wg sync.WaitGroup
-	for lo := 0; lo < frames; lo += chunk {
-		hi := min(lo+chunk, frames)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			fft := fourier.NewFFT(WindowSize) // FFTは共有しない
-			frame := make([]float64, WindowSize)
-			coef := make([]complex128, WindowSize/2+1)
-			power := make([]float64, WindowSize/2+1)
-			for f := lo; f < hi; f++ {
-				if f%64 == 0 && ctx.Err() != nil {
-					return
-				}
-				start := f*hop - WindowSize/2
-				for i := range frame {
-					if j := start + i; j >= 0 && j < len(mono) {
-						frame[i] = float64(mono[j]) * win[i]
-					} else {
-						frame[i] = 0
-					}
-				}
-				fft.Coefficients(coef, frame)
-				for k, c := range coef {
-					// AnalyserNode と同じ: |X[k]| = |Σ x·w·e^-jωn| / N のパワー
-					re, im := real(c)/WindowSize, imag(c)/WindowSize
-					power[k] = re*re + im*im
-				}
-				bandLevels(power, sr, s.Data[f*s.Bands:(f+1)*s.Bands])
-			}
-		}()
-	}
-	wg.Wait()
+	return a
+}
+
+// Write は mono の続きを与え、窓がそろったフレームを計算する。
+func (a *Analyzer) Write(ctx context.Context, mono []float32) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a.hist = append(a.hist, mono...)
+	a.total += len(mono)
+	if a.total < WindowSize/2 {
+		return nil
+	}
+	return a.compute(ctx, (a.total-WindowSize/2)/a.hop+1)
+}
+
+// Finish は入力の終わりを知らせ、残りのフレーム(窓の右半分が信号の外にはみ出すもの)を計算して返す。
+// フレーム数は ceil(総サンプル数 / hop)。
+func (a *Analyzer) Finish(ctx context.Context) (*Series, error) {
+	frames := (a.total + a.hop - 1) / a.hop
+	if err := a.compute(ctx, frames); err != nil {
 		return nil, err
 	}
-	return s, nil
+	data := a.data
+	if data == nil {
+		data = []float32{}
+	}
+	return &Series{HopSec: float64(a.hop) / float64(a.sr), Bands: NumBands(), Frames: frames, Data: data}, nil
+}
+
+// compute はフレーム [next, upTo) を計算する(upTo は、窓がそろっているか、信号の終わりが確定しているもの)。
+func (a *Analyzer) compute(ctx context.Context, upTo int) error {
+	from := a.next
+	if upTo > from {
+		a.data = append(a.data, make([]float32, (upTo-from)*NumBands())...)
+		workers := min(len(a.workers), upTo-from)
+		chunk := (upTo - from + workers - 1) / workers
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			lo, hi := from+w*chunk, min(from+(w+1)*chunk, upTo)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				wk := a.workers[w]
+				for f := lo; f < hi; f++ {
+					if f%64 == 0 && ctx.Err() != nil {
+						return
+					}
+					start := f*a.hop - WindowSize/2
+					for i := range wk.frame {
+						if j := start + i; j >= 0 && j < a.total {
+							wk.frame[i] = float64(a.hist[j-a.base]) * a.win[i]
+						} else {
+							wk.frame[i] = 0
+						}
+					}
+					wk.fft.Coefficients(wk.coef, wk.frame)
+					for k, c := range wk.coef {
+						// AnalyserNode と同じ: |X[k]| = |Σ x·w·e^-jωn| / N のパワー
+						re, im := real(c)/WindowSize, imag(c)/WindowSize
+						wk.power[k] = re*re + im*im
+					}
+					bandLevels(wk.power, a.sr, a.data[f*NumBands():(f+1)*NumBands()])
+				}
+			}()
+		}
+		wg.Wait()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		a.next = upTo
+	}
+	// 次のフレームの窓の左端より前は、もう使わない
+	if keep := max(a.next*a.hop-WindowSize/2, 0); keep > a.base {
+		a.hist = a.hist[:copy(a.hist, a.hist[keep-a.base:])]
+		a.base = keep
+	}
+	return nil
+}
+
+// Compute は mono(サンプルレート sr)を、HopSec ごとのフレームについて帯域レベルにする。
+// フレームは中心を f×HopSec にそろえ、信号の外は無音として扱う。Analyzer に全体を流す包み。
+func Compute(ctx context.Context, mono []float32, sr int) (*Series, error) {
+	a := NewAnalyzer(sr)
+	if err := a.Write(ctx, mono); err != nil {
+		return nil, err
+	}
+	return a.Finish(ctx)
 }
 
 // bandLevels はbinごとのパワーから、帯域ごとのレベル(dB)を out に書く。帯域内のbinのパワーを足し、
@@ -136,16 +209,33 @@ func bandLevels(power []float64, sr int, out []float32) {
 	}
 }
 
-// MeanSquare は信号の2乗平均。
-func MeanSquare(x []float32) float64 {
-	if len(x) == 0 {
+// MeanSquareAcc は信号の2乗平均を、区切って順に Add しながら求める(全体を一度に求めた場合と同じ値)。
+type MeanSquareAcc struct {
+	sum float64
+	n   int
+}
+
+// Add は x の続きを加える。
+func (m *MeanSquareAcc) Add(x []float32) {
+	for _, v := range x {
+		m.sum += float64(v) * float64(v)
+	}
+	m.n += len(x)
+}
+
+// Value はここまでの2乗平均。空なら 0。
+func (m *MeanSquareAcc) Value() float64 {
+	if m.n == 0 {
 		return 0
 	}
-	s := 0.0
-	for _, v := range x {
-		s += float64(v) * float64(v)
-	}
-	return s / float64(len(x))
+	return m.sum / float64(m.n)
+}
+
+// MeanSquare は信号の2乗平均。
+func MeanSquare(x []float32) float64 {
+	var m MeanSquareAcc
+	m.Add(x)
+	return m.Value()
 }
 
 // Mono は左右の平均(フロントのAnalyserNodeが、ステレオをモノにするのと同じ)。長さは短いほうにそろえる。

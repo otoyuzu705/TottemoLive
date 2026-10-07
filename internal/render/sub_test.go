@@ -123,7 +123,7 @@ func TestSubIsMonoInBothEars(t *testing.T) {
 // プレビューの結果には、PA出力の帯域レベルが入る。書き出し(Render)には入らない。
 func TestPreviewHasPASpectrum(t *testing.T) {
 	p := bassProject(makeBassSource(t))
-	e := NewEngine()
+	e := newTestEngine(t)
 	res, err := e.Preview(context.Background(), p, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +166,7 @@ func TestPreviewHasPASpectrum(t *testing.T) {
 // 残響量や座席を変えても、PA出力の帯域レベルは再計算されない(同じ結果が返る)。PAを変えると変わる。
 func TestPASpectrumCaching(t *testing.T) {
 	p := bassProject(makeBassSource(t))
-	e := NewEngine()
+	e := newTestEngine(t)
 	first, err := e.Preview(context.Background(), p, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -248,7 +248,7 @@ func TestSubAffectsReverbOnlyWhenEnabled(t *testing.T) {
 	p := bassProject(makeBassSource(t))
 	p.Reverb.Mix = 1 // 残響だけを聴く
 	p.Spatial.DirectLevelDb = -12
-	e := NewEngine()
+	e := newTestEngine(t)
 	counts := func() map[string]int { return computed(e) }
 	render := func(q project.Project) {
 		if _, err := e.Preview(context.Background(), q, nil); err != nil {

@@ -48,3 +48,28 @@ jobs:
           path: dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 14
+  attach-assets:
+    name: Attach packages to published release
+    needs: checksums
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release files
+        uses: actions/download-artifact@v8
+        with:
+          pattern: TottemoLive-*
+          merge-multiple: true
+          path: dist
+      - name: Verify and attach release assets
+        working-directory: dist
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          sha256sum --check SHA256SUMS
+          gh release upload "$RELEASE_TAG" TottemoLive-windows-amd64.zip TottemoLive-macos-amd64.zip TottemoLive-macos-arm64.zip SHA256SUMS

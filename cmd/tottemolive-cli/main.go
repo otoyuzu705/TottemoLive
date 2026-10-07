@@ -21,6 +21,7 @@ import (
 	"tottemolive/internal/params"
 	"tottemolive/internal/project"
 	"tottemolive/internal/render"
+	"tottemolive/internal/settings"
 	"tottemolive/internal/venue"
 )
 
@@ -28,6 +29,10 @@ const usage = `使い方:
   tottemolive-cli render <project.json> -o <out.wav> [--set パス=値 ...] [--venue ID]
   tottemolive-cli params                       音作りパラメーターの一覧
   tottemolive-cli new -o <project.json> [音源 ...]   既定値のプロジェクトを作る
+
+環境変数:
+  TOTTEMOLIVE_CACHE_DIR  一時ファイル(使い捨てのスプール)の置き場所(絶対パス。未設定はOSの一時フォルダ)
+  TOTTEMOLIVE_CACHE=off  キャッシュを使わない(renderは元々使わない)
 `
 
 type setFlags []string
@@ -112,12 +117,35 @@ func cmdRender(args []string) error {
 			last = line
 		}
 	}
-	if err := render.Export(ctx, p, *out, prog); err != nil {
+	cfg, err := cacheFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	// render はキャッシュを使わない(TOTTEMOLIVE_CACHE=off と同じ)が、使い捨てのスプールの置き場所には TOTTEMOLIVE_CACHE_DIR が効く
+	if err := render.ExportIn(ctx, cfg.CacheDir, p, *out, prog); err != nil {
 		fmt.Fprintln(os.Stderr)
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "\n完了: %s (%.1f秒)\n", *out, time.Since(start).Seconds())
 	return nil
+}
+
+// cacheFromEnv は環境変数から、アプリの設定と同じ形のキャッシュ設定を作る。
+//
+//	TOTTEMOLIVE_CACHE_DIR  一時ファイル(使い捨てのスプール)の置き場所。絶対パス。無ければ作る。未設定は OS の一時フォルダ
+//	TOTTEMOLIVE_CACHE=off  キャッシュを使わない(off / 0 / false / no)。render は元々使わないので結果は変わらない
+func cacheFromEnv(getenv func(string) string) (settings.Settings, error) {
+	s := settings.Default()
+	s.CacheDir = getenv("TOTTEMOLIVE_CACHE_DIR")
+	switch strings.ToLower(strings.TrimSpace(getenv("TOTTEMOLIVE_CACHE"))) {
+	case "off", "0", "false", "no":
+		s.CacheEnabled = false
+	}
+	v, err := settings.Validate(s)
+	if err != nil {
+		return s, fmt.Errorf("TOTTEMOLIVE_CACHE_DIR: %w", err)
+	}
+	return v, nil
 }
 
 func cmdParams() {
