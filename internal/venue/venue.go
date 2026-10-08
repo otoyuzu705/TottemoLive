@@ -10,6 +10,9 @@ import (
 	"hash/fnv"
 	"math"
 	"math/rand"
+	"sync"
+
+	"gonum.org/v1/gonum/dsp/fourier"
 
 	"tottemolive/internal/dsp"
 	"tottemolive/internal/project"
@@ -163,14 +166,65 @@ func IRSeconds(pr Preset, r project.Reverb) float64 {
 // highDecayStages は、高域の残響が中域から highDecayScale 倍まで短くなる過程の段数(1オクターブを分けた数)。
 const highDecayStages = 3
 
-// highDecayEdges は、中高域を帯域に分ける周波数(Hz): highHz から1オクターブを highDecayStages 等分した境目。
-// 帯域は、境目の数 + 1 個(最初が中域、最後が highHz の2倍より上)。
-func highDecayEdges(highHz float64) []float64 {
-	edges := make([]float64, highDecayStages+1)
-	for k := range edges {
-		edges[k] = highHz * math.Pow(2, float64(k)/highDecayStages)
+// 高域の残響時間の節点は、highHz から1オクターブを highDecayStages 等分した highDecayStages+1 点
+// (highHz·2^(k/highDecayStages))。節点 k の残響時間は 中域の highScale^(k/highDecayStages) 倍
+// (k=0 が1倍、最後が highScale 倍)。
+// highDecayPos は周波数 f(Hz)の、節点の並びの上での位置(0〜highDecayStages)。
+// f が最初の節点(highHz)以下なら 0、最後の節点(highHz の2倍)以上なら highDecayStages。
+func highDecayPos(f, highHz float64) float64 {
+	u := 0.0
+	if f > 0 {
+		u = math.Log2(f/highHz) * highDecayStages
 	}
-	return edges
+	return math.Min(math.Max(u, 0), highDecayStages)
+}
+
+// nodeWeight は位置 u での節点 k の重み(0〜1)。隣の節点まで直線で下がる三角形で、どの u でも全節点の合計は1。
+func nodeWeight(u float64, k int) float64 { return math.Max(0, 1-math.Abs(u-float64(k))) }
+
+// irFFTLen は、長さ n の雑音を周波数領域で分けるときのFFT長(n 以上の2のべき乗)。
+// gonum の FFT は大きな素因数を含む長さで極端に遅くなるので、2のべき乗にそろえる。
+func irFFTLen(n int) int {
+	N := 1
+	for N < n {
+		N <<= 1
+	}
+	return N
+}
+
+// splitByNodes は x(長さ N = 2のべき乗)を周波数領域でゼロ位相の重み(nodeWeight)ごとの成分に分け、
+// 各成分の先頭 n サンプルを返す。pos[b] は bin b の highDecayPos。最後の成分は x から他の成分を引いて作る
+// (成分の和は x と一致する)。循環畳み込みになるが、x は定常な雑音なので端の影響はない。
+func splitByNodes(x []float32, pos []float64, n int) [][]float32 {
+	N := len(x)
+	fft := fourier.NewFFT(N) // ゴルーチンごとに作る(gonum のFFTはゴルーチン安全でない)
+	buf := make([]float64, N)
+	for i, v := range x {
+		buf[i] = float64(v)
+	}
+	X := fft.Coefficients(nil, buf)
+	rest := append([]float64(nil), buf[:n]...)
+	Y := make([]complex128, len(X))
+	out := make([][]float32, highDecayStages+1)
+	for k := 0; k < highDecayStages; k++ { // 最後の節点は引き算で作る
+		for b := range X {
+			Y[b] = X[b] * complex(nodeWeight(pos[b], k), 0)
+		}
+		fft.Sequence(buf, Y) // buf を出力に使い回す(正規化されていないので N で割る)
+		band := make([]float32, n)
+		for i := range band {
+			v := buf[i] / float64(N)
+			band[i] = float32(v)
+			rest[i] -= v
+		}
+		out[k] = band
+	}
+	last := make([]float32, n)
+	for i, v := range rest {
+		last[i] = float32(v)
+	}
+	out[highDecayStages] = last
+	return out
 }
 
 // IRの正規化に使う中域の範囲(Hz)。高域ダンプ(2 kHz以上)と低域の残響(境界250 Hz以下)の影響を受けにくい帯域。
@@ -221,35 +275,42 @@ func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
 
 	h := fnv.New64a()
 	h.Write([]byte(pr.ID))
-	// 左右それぞれの独立な白色ノイズを、低域と、中高域のいくつかの帯域に分ける(LR4で順に分けると、足し合わせた
-	// 振幅はフラットのまま)。中高域は、HighDecayHz までを残響の長さ1倍の中域とし、そこから1オクターブかけて
-	// 段階的に短くして、HighDecayHz の2倍より上は HighDecayScale 倍にする(周波数ごとの残響時間の曲線を滑らかにする。
-	// 1か所で分けると、境界付近で中域の遅い成分が漏れて、高域の後期の減衰を支配してしまう)
-	edges := highDecayEdges(r.HighDecayHz)
-	var low [2][]float32
-	var bands [2][][]float32 // [チャンネル][帯域][サンプル]。帯域0が中域、最後が最高域
-	for c := 0; c < 2; c++ {
-		rng := rand.New(rand.NewSource(int64(h.Sum64()) + int64(c)*7919))
-		noise := make([]float32, n)
-		for i := range noise {
-			noise[i] = float32(rng.Float64()*2 - 1)
-		}
-		low[c] = append([]float32(nil), noise...)
-		dsp.LR4LowPass(low[c], fs, r.LowCrossoverHz)
-		dsp.LR4HighPass(noise, fs, r.LowCrossoverHz)
-		for _, f := range edges {
-			part := append([]float32(nil), noise...)
-			dsp.LR4LowPass(part, fs, f)
-			dsp.LR4HighPass(noise, fs, f)
-			bands[c] = append(bands[c], part)
-		}
-		bands[c] = append(bands[c], noise)
+	seed := int64(h.Sum64())
+	// 左右それぞれの独立な白色ノイズを、低域(LR4)と中高域に分け、中高域は周波数領域のゼロ位相の重み
+	// (対数周波数で隣の節点まで直線で下がる三角形。どの周波数でも重みの合計は1)で節点ごとの成分に分ける。
+	// 節点は HighDecayHz から1オクターブを3等分した4点で、節点 k の成分に残響時間 HighDecayScale^(k/3) 倍の減衰を
+	// 掛けて足す。減衰が掛かる前の和は元の中高域そのもの(振幅も位相も平坦)で、周波数ごとの残響時間は節点の間で
+	// 滑らかにつながる。LR4 を多段に分けて足すと、上の境界の位相が下の帯域に掛からず、境界付近で打ち消し合って
+	// 穴が空く(v1.3.1 までの不具合)。
+	N := irFFTLen(n)
+	pos := make([]float64, N/2+1) // bin ごとの節点の位置(左右で共有)
+	for b := range pos {
+		pos[b] = highDecayPos(float64(b)*fs/float64(N), r.HighDecayHz)
 	}
-	// 帯域ごとの残響時間(中域を1として、段階的に highScale へ)
+	var low [2][]float32
+	var bands [2][][]float32 // [チャンネル][節点][サンプル]。節点0が中域、最後が highHz の2倍より上
+	var wg sync.WaitGroup
+	for c := 0; c < 2; c++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(seed + int64(c)*7919))
+			noise := make([]float32, N) // 先頭 n は従来と同じ乱数列(低域の成分は従来とサンプル単位で同じ)
+			for i := range noise {
+				noise[i] = float32(rng.Float64()*2 - 1)
+			}
+			low[c] = append([]float32(nil), noise[:n]...)
+			dsp.LR4LowPass(low[c], fs, r.LowCrossoverHz)
+			dsp.LR4HighPass(noise, fs, r.LowCrossoverHz)
+			bands[c] = splitByNodes(noise, pos, n)
+		}()
+	}
+	wg.Wait()
+	// 節点ごとの残響時間(中域を1として、段階的に highScale へ)
 	highScale := math.Min(math.Max(r.HighDecayScale, 0.05), 1)
-	bandRT := make([]float64, len(bands[0]))
+	bandRT := make([]float64, highDecayStages+1)
 	for j := range bandRT {
-		bandRT[j] = rtMain * math.Pow(highScale, float64(j)/float64(len(edges)))
+		bandRT[j] = rtMain * math.Pow(highScale, float64(j)/highDecayStages)
 	}
 	// 右の低域 = c × 左の低域 + √(1-c²) × 右の独立な低域(どちらも同じ強さなので、相関は c になる)
 	c := math.Min(math.Max(r.LowCoherence, 0), 1)

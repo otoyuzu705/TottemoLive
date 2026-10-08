@@ -2,8 +2,11 @@ package venue
 
 import (
 	"math"
+	"math/rand"
 	"reflect"
 	"testing"
+
+	"gonum.org/v1/gonum/dsp/fourier"
 
 	"tottemolive/internal/dsp"
 	"tottemolive/internal/project"
@@ -290,8 +293,7 @@ func TestCriticalDistance(t *testing.T) {
 
 // 高域は中域より早く減衰する: 境界(highDecayHz)の2倍より上の残響時間は中域の highDecayScale 倍、
 // 境界より下の中域・低域の残響時間は変わらず、残響時間は周波数とともに短くなる(増えない)。
-// 境界のすぐ上は、帯域を分けるフィルタの肩から漏れる中域の遅い成分が、シュレーダー積分の後期の減衰を支配するので、
-// 目標の曲線より少し長く測定される。そのため、境界の2倍より上で目標との一致を確かめる。
+// オクターブ帯域の測定では、境界から2倍までは隣の節点が混ざった値になる。そのため、境界の2倍より上で目標との一致を確かめる。
 func TestBuildIRHighDecay(t *testing.T) {
 	pr, _ := Get("hall")
 	for _, scale := range []float64{1, 0.6, 0.3} {
@@ -352,5 +354,117 @@ func TestBuildIRHighDecayKeepsMidAndRespectsBoundary(t *testing.T) {
 	over.HighDecayScale = 3
 	if len(BuildIR(pr, over, 48000)[0]) != len(a[0]) {
 		t.Error("a scale above 1 must not lengthen the IR")
+	}
+}
+
+// thirdOctDensity は、IR(左右)の 1/3 オクターブ帯域(中心 fcs、fc·2^(±1/6))のパワー密度(dB、絶対値は意味を持たない)。
+// IR全体を2のべき乗にゼロ詰めしてFFTし、左右のパワーを足して、帯域内のbinで平均する。
+func thirdOctDensity(ir [][]float32, fs float64, fcs []float64) []float64 {
+	N := irFFTLen(len(ir[0]))
+	fft := fourier.NewFFT(N)
+	pw := make([]float64, N/2+1)
+	for _, ch := range ir {
+		buf := make([]float64, N)
+		for i, v := range ch {
+			buf[i] = float64(v)
+		}
+		for b, c := range fft.Coefficients(nil, buf) {
+			pw[b] += real(c)*real(c) + imag(c)*imag(c)
+		}
+	}
+	out := make([]float64, len(fcs))
+	for i, fc := range fcs {
+		lo, hi := fc*math.Pow(2, -1.0/6), fc*math.Pow(2, 1.0/6)
+		sum, n := 0.0, 0
+		for b := int(math.Ceil(lo * float64(N) / fs)); b <= int(hi*float64(N)/fs) && b < len(pw); b++ {
+			sum += pw[b]
+			n++
+		}
+		out[i] = 10 * math.Log10(sum/float64(n))
+	}
+	return out
+}
+
+func thirdOctCenters(k0, k1 int) []float64 {
+	var fcs []float64
+	for k := k0; k <= k1; k++ {
+		fcs = append(fcs, 1000*math.Pow(2, float64(k)/3))
+	}
+	return fcs
+}
+
+func TestHighDecayWeightsSumToOne(t *testing.T) {
+	for _, hz := range []float64{2000, 4000, 12000} {
+		for f := 0.0; f <= 24000; f += 7.3 {
+			sum := 0.0
+			u := highDecayPos(f, hz)
+			for k := 0; k <= highDecayStages; k++ {
+				sum += nodeWeight(u, k)
+			}
+			if math.Abs(sum-1) > 1e-12 {
+				t.Fatalf("hz %v f %v: weights sum to %v", hz, f, sum)
+			}
+			if f <= hz && nodeWeight(u, 0) != 1 {
+				t.Fatalf("hz %v f %v: node 0 weight %v, want 1", hz, f, nodeWeight(u, 0))
+			}
+			if f >= 2*hz && nodeWeight(u, highDecayStages) != 1 {
+				t.Fatalf("hz %v f %v: last node weight %v, want 1", hz, f, nodeWeight(u, highDecayStages))
+			}
+		}
+	}
+}
+
+func TestSplitByNodesSumsToInput(t *testing.T) {
+	const N, n = 1 << 14, 10000
+	rng := rand.New(rand.NewSource(1))
+	x := make([]float32, N)
+	for i := range x {
+		x[i] = float32(rng.Float64()*2 - 1)
+	}
+	pos := make([]float64, N/2+1)
+	for b := range pos {
+		pos[b] = highDecayPos(float64(b)*48000/N, 4000)
+	}
+	parts := splitByNodes(x, pos, n)
+	if len(parts) != highDecayStages+1 {
+		t.Fatalf("%d components, want %d", len(parts), highDecayStages+1)
+	}
+	worst := 0.0
+	for i := 0; i < n; i++ {
+		sum := 0.0
+		for _, p := range parts {
+			sum += float64(p[i])
+		}
+		worst = math.Max(worst, math.Abs(sum-float64(x[i])))
+	}
+	if worst > 1e-6 {
+		t.Errorf("components differ from the input by %g", worst)
+	}
+}
+
+// 高域の減衰を無効(scale 1・ダンプ最大)にしたIRは、2〜10 kHz が平坦になる(帯域分割の打ち消しで穴が空かない)。
+func TestBuildIRFlatHighBand(t *testing.T) {
+	for _, pr := range List() {
+		r := pr.Reverb
+		r.HighDecayScale, r.HighDampHz = 1, 16000
+		d := thirdOctDensity(BuildIR(pr, r, 48000), 48000, thirdOctCenters(0, 10))
+		ref := (d[0] + d[1] + d[2] + d[3]) / 4
+		for k := 3; k <= 10; k++ {
+			if dev := d[k] - ref; math.Abs(dev) > 1.2 {
+				t.Errorf("%s: %.0f Hz band is %+.1f dB from the 1-2 kHz level", pr.ID, 1000*math.Pow(2, float64(k)/3), dev)
+			}
+		}
+	}
+}
+
+// 既定の残響設定では、4 kHz より上の 1/3 オクターブは隣の低い帯域より上がらない(穴の後で戻らない)。
+func TestBuildIRHighBandDecreases(t *testing.T) {
+	for _, pr := range List() {
+		d := thirdOctDensity(BuildIR(pr, pr.Reverb, 48000), 48000, thirdOctCenters(5, 12))
+		for i := 1; i < len(d); i++ {
+			if d[i]-d[i-1] > 1 {
+				t.Errorf("%s: band %d rises %.1f dB over the band below", pr.ID, i+5, d[i]-d[i-1])
+			}
+		}
 	}
 }
