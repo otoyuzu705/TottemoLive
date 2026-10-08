@@ -21,11 +21,7 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 	base := testProject(makeSource(t, dir))
 	base.Venue.Preset = "livehouse"
 
-	cases := []struct {
-		name   string
-		mod    func(*project.Project)
-		stages []string // 再計算されるべき段(それ以外は再利用)
-	}{
+	cases := []invalidationCase{
 		{"reverb.mix", func(p *project.Project) { p.Reverb.Mix = 0.6 }, nil},
 		{"spatial.directLevelDb", func(p *project.Project) { p.Spatial.DirectLevelDb = -3 }, nil},
 		{"output.targetLufs", func(p *project.Project) { p.Output.TargetLufs = -18 }, nil},
@@ -57,7 +53,20 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 		{"spatial.headShadow", func(p *project.Project) { p.Spatial.HeadShadow = 0.5 }, []string{"direct"}},
 		{"spatial.airAbsorption", func(p *project.Project) { p.Spatial.AirAbsorption = 0.5 }, []string{"direct"}},
 		{"venue.speakers", func(p *project.Project) { p.Venue.Speakers[0].X = -2 }, []string{"direct"}},
+		{"spatial.airCompensation", func(p *project.Project) { p.Spatial.AirCompensation = 0.5 }, []string{"direct", "reverb"}},
+		{"spatial.airCompensationMaxDb (補正0)", func(p *project.Project) { p.Spatial.AirCompensationMaxDb = 6 }, nil},
 	}
+	runInvalidationCases(t, base, cases)
+}
+
+type invalidationCase struct {
+	name   string
+	mod    func(*project.Project)
+	stages []string // 再計算されるべき段(それ以外は再利用)
+}
+
+// runInvalidationCases は、base でプレビューした後に各ケースの変更を加えて再プレビューし、再計算された段が期待どおりか確かめる。
+func runInvalidationCases(t *testing.T, base project.Project, cases []invalidationCase) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newTestEngine(t)
@@ -83,6 +92,20 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// 空気吸収の補正が有効な状態では、補正の設定・吸収の倍率・スピーカー位置が残響にも効き、座席は直接音だけに効く。
+func TestPreviewCacheInvalidationAirComp(t *testing.T) {
+	base := testProject(makeSource(t, t.TempDir()))
+	base.Venue.Preset = "livehouse"
+	base.Spatial.AirCompensation = 0.5
+	runInvalidationCases(t, base, []invalidationCase{
+		{"spatial.airCompensationMaxDb", func(p *project.Project) { p.Spatial.AirCompensationMaxDb = 6 }, []string{"direct", "reverb"}},
+		{"spatial.airAbsorption", func(p *project.Project) { p.Spatial.AirAbsorption = 0.5 }, []string{"direct", "reverb"}},
+		{"venue.speakers", func(p *project.Project) { p.Venue.Speakers[0].X = -2 }, []string{"direct", "reverb"}},
+		{"listener", func(p *project.Project) { p.Listener.X = 3 }, []string{"direct"}},
+		{"reverb.mix", func(p *project.Project) { p.Reverb.Mix = 0.6 }, nil},
+	})
 }
 
 // 同じ区間を同じ値で2回頼むと、全段がキャッシュから返る。

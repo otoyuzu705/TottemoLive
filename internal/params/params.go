@@ -72,6 +72,8 @@ var specs = []ParamSpec{
 	f("spatial.headShadow", "頭の影の強さ", "spatial", "", 0, 1.5, 0.05, 1.0),
 	f("spatial.distanceRolloff", "距離減衰の強さ", "spatial", "", 0, 1.5, 0.05, 1.0),
 	f("spatial.airAbsorption", "空気吸収の強さ", "spatial", "", 0, 2, 0.05, 1.0),
+	f("spatial.airCompensation", "空気吸収の補正(FOH基準)", "spatial", "", 0, 1, 0.05, 0),
+	advanced(f("spatial.airCompensationMaxDb", "空気吸収の補正の上限", "spatial", "dB", 0, 18, 0.5, 12)),
 	f("spatial.directLevelDb", "直接音レベル", "spatial", "dB", -12, 6, 0.5, 0),
 
 	f("reverb.mix", "残響量", "reverb", "", 0, 1, 0.01, 0.35),

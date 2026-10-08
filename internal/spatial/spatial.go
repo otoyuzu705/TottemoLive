@@ -85,6 +85,7 @@ func Direction(lx, ly, lz, yawDeg, px, py, pz float64) (azDeg, elDeg, dist float
 type DirectParams struct {
 	Rolloff       float64 // spatial.distanceRolloff
 	AirAbsorption float64 // spatial.airAbsorption
+	AirComp       AirComp // 基準点(FOH)での空気吸収の補正(空なら補正なし)
 }
 
 // DirectStream は仮想スピーカー1本ぶんの直接音を、入力を区切って順に Process しながら計算する。
@@ -102,7 +103,7 @@ type DirectStream struct {
 // NewDirectStream は、距離 dist(m)・方位 azDeg・仰角 elDeg のスピーカーの直接音を計算する処理器を返す。
 func NewDirectStream(sr int, dist, azDeg, elDeg float64, set Set, p DirectParams) *DirectStream {
 	// 空気吸収(線形位相FIR)の群遅延ぶん、伝搬遅延から引いて、全体の遅れを合わせる(近すぎて引けないぶんは遅れる)
-	air := AirFIR(dist, p.AirAbsorption, sr)
+	air := AirFIRComp(dist, p.AirAbsorption, p.AirComp, sr)
 	delay := DelaySamples(dist, sr)
 	lead := 0
 	if air != nil {

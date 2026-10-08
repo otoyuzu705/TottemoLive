@@ -84,7 +84,10 @@ type Spatial struct {
 	HeadShadow      float64 `json:"headShadow"`
 	DistanceRolloff float64 `json:"distanceRolloff"`
 	AirAbsorption   float64 `json:"airAbsorption"`
-	DirectLevelDb   float64 `json:"directLevelDb"`
+	// 基準点(FOH)での空気吸収の損失を、PAのEQで補う割合(0〜1)と、持ち上げの上限(dB)。直接音と残響の励起に効く。
+	AirCompensation      float64 `json:"airCompensation"`
+	AirCompensationMaxDb float64 `json:"airCompensationMaxDb"`
+	DirectLevelDb        float64 `json:"directLevelDb"`
 }
 
 type Reverb struct {

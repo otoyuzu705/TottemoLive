@@ -41,6 +41,7 @@ func newDirectProc(pp *prepared) *directProc {
 		az, el, dist := spatial.Direction(p.Listener.X, p.Listener.Y, p.Listener.Z, p.Listener.YawDeg, s.X, s.Y, s.Z)
 		d.spk = append(d.spk, spatial.NewDirectStream(sampleRate, dist, az, el, pp.set, spatial.DirectParams{
 			Rolloff: p.Spatial.DistanceRolloff, AirAbsorption: p.Spatial.AirAbsorption,
+			AirComp: airCompFor(p, pp.pr, s),
 		}))
 		d.q = append(d.q, newFrameQueue(2))
 		if d.subOn {

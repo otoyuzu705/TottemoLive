@@ -2,6 +2,7 @@ package render
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"os/exec"
 	"path/filepath"
@@ -10,8 +11,16 @@ import (
 
 // 先行プレビューの窓は、曲全体の同じ範囲と(ラウドネスの推定の誤差を除いて)同じ音になる。
 func TestPreviewWindowMatchesFull(t *testing.T) {
+	// 空気吸収の補正が有効でも、窓は同じ会場IR(補正入り)を通る
+	for _, comp := range []float64{0, 0.5} {
+		t.Run(fmt.Sprintf("airCompensation=%v", comp), func(t *testing.T) { checkWindowMatchesFull(t, comp) })
+	}
+}
+
+func checkWindowMatchesFull(t *testing.T, airComp float64) {
 	dir := t.TempDir()
 	p := testProject(makeSource(t, dir))
+	p.Spatial.AirCompensation = airComp
 	full, err := newTestEngine(t).Preview(context.Background(), p, nil)
 	if err != nil {
 		t.Fatal(err)

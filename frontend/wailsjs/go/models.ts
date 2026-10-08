@@ -235,6 +235,8 @@ export namespace project {
 	    headShadow: number;
 	    distanceRolloff: number;
 	    airAbsorption: number;
+	    airCompensation: number;
+	    airCompensationMaxDb: number;
 	    directLevelDb: number;
 	
 	    static createFrom(source: any = {}) {
@@ -247,6 +249,8 @@ export namespace project {
 	        this.headShadow = source["headShadow"];
 	        this.distanceRolloff = source["distanceRolloff"];
 	        this.airAbsorption = source["airAbsorption"];
+	        this.airCompensation = source["airCompensation"];
+	        this.airCompensationMaxDb = source["airCompensationMaxDb"];
 	        this.directLevelDb = source["directLevelDb"];
 	    }
 	}
