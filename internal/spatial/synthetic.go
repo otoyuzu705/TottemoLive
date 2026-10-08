@@ -2,7 +2,6 @@ package spatial
 
 import (
 	"math"
-	"sync"
 
 	"tottemolive/internal/dsp"
 )
@@ -23,37 +22,24 @@ const (
 )
 
 type synthetic struct {
-	sr    int
-	mu    sync.Mutex
-	cache map[[2]int]HRIR
+	sr     int
+	shadow float64 // spatial.headShadow: 頭の影の強さ(1 でここに書いた値、0 で影なし)
+	grid   hrirGrid
 }
 
-func newSynthetic(sr int) *synthetic {
-	return &synthetic{sr: sr, cache: map[[2]int]HRIR{}}
+func newSynthetic(sr int, shadow float64) *synthetic {
+	return &synthetic{sr: sr, shadow: shadow}
 }
 
-func (s *synthetic) Name() string { return "synthetic" }
+func (s *synthetic) Name() string { return SyntheticName }
 
 func (s *synthetic) Lookup(azDeg, elDeg float64) HRIR {
-	azDeg = math.Mod(azDeg+540, 360) - 180 // -180〜180
-	ka := int(math.Round(azDeg / synAzStepDeg))
-	ke := int(math.Round(elDeg / synElStepDeg))
-	key := [2]int{ka, ke}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if h, ok := s.cache[key]; ok {
-		return h
-	}
-	h := s.build(float64(ka)*synAzStepDeg, float64(ke)*synElStepDeg)
-	s.cache[key] = h
-	return h
+	return s.grid.lookup(azDeg, elDeg, s.build)
 }
 
 func (s *synthetic) build(azDeg, elDeg float64) HRIR {
-	az, el := azDeg*math.Pi/180, elDeg*math.Pi/180
-	sinLat := math.Sin(az) * math.Cos(el) // 右耳軸への射影(+1 が真右)
-	lat := math.Asin(math.Max(-1, math.Min(1, sinLat)))
-	itd := synHeadRadius / SpeedOfSound * (math.Abs(lat) + math.Abs(sinLat))
+	az := azDeg * math.Pi / 180
+	sinLat, itd := lateral(azDeg, elDeg)
 	front := 0.85 + 0.15*math.Cos(az) // 前 1.0、後ろ 0.7
 
 	ear := func(sign float64) []float32 {
@@ -62,22 +48,10 @@ func (s *synthetic) build(azDeg, elDeg float64) HRIR {
 		if s1 < 0 {
 			delay += itd * float64(s.sr)
 		}
-		h := make([]float32, synTaps)
-		for n := range h {
-			t := float64(n) - delay
-			v := 1.0
-			if t != 0 {
-				v = math.Sin(math.Pi*t) / (math.Pi * t)
-			}
-			w := 0.5 + 0.5*math.Cos(math.Pi*t/synBaseDelay)
-			if math.Abs(t) > synBaseDelay {
-				w = 0
-			}
-			h[n] = float32(v * w)
-		}
-		fc := synIpsiHz * math.Pow(synContraHz/synIpsiHz, (1-s1)/2) * front
+		h := delayedImpulse(delay)
+		fc := synIpsiHz * math.Pow(synContraHz/synIpsiHz, (1-s1)/2*s.shadow) * front
 		dsp.LowPass(float64(s.sr), fc).Process(h)
-		g := float32(dsp.DbToLin(synIldDb * s1))
+		g := float32(dsp.DbToLin(synIldDb * s1 * s.shadow))
 		for n := range h {
 			h[n] *= g
 		}

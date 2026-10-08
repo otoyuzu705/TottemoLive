@@ -195,9 +195,9 @@ func TestParseOldProjectGetsSubDefaults(t *testing.T) {
 	}
 }
 
-// 高域シェルフは +6 dB まで受け付け、それを超える値は丸める。下は -12 dB。
+// 高域シェルフは +12 dB まで受け付け、それを超える値は丸める。下は -12 dB。
 func TestHighShelfRange(t *testing.T) {
-	for in, want := range map[float64]float64{6: 6, 9: 6, 3.5: 3.5, -12: -12, -20: -12} {
+	for in, want := range map[float64]float64{12: 12, 15: 12, 9: 9, 3.5: 3.5, -12: -12, -20: -12} {
 		p := project.New()
 		p.PA.HighShelfDb = in
 		p.Normalize()

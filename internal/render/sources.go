@@ -16,7 +16,7 @@ import (
 // 音源を区切って順に Process してよい(結果は区切り方に依らない)。
 type paProc struct {
 	g     float32
-	f     [2][3]*dsp.Biquad // チャンネルごとの 低域カット → 低域シェルフ → 高域シェルフ
+	f     [2][]*dsp.Biquad // チャンネルごとの 低域カット → 低域シェルフ →(プレゼンス)→ 高域シェルフ
 	comp  *dsp.Compressor
 	drive float64
 }
@@ -32,11 +32,14 @@ func newPAProc(sr int, gainDb float64, pa project.PA) *paProc {
 		drive: pa.Drive,
 	}
 	for c := range p.f {
-		p.f[c] = [3]*dsp.Biquad{
+		fs := []*dsp.Biquad{
 			dsp.HighPass(float64(sr), pa.LowCutHz),
 			dsp.LowShelf(float64(sr), pa.LowShelfHz, pa.LowShelfDb),
-			dsp.HighShelf(float64(sr), pa.HighShelfHz, pa.HighShelfDb),
 		}
+		if pa.PresenceDb != 0 { // 量 0 は通さない(従来と同じ結果。旧実装とのビット一致を保つ)
+			fs = append(fs, dsp.Peaking(float64(sr), pa.PresenceHz, pa.PresenceDb, pa.PresenceQ))
+		}
+		p.f[c] = append(fs, dsp.HighShelf(float64(sr), pa.HighShelfHz, pa.HighShelfDb))
 	}
 	return p
 }
@@ -44,7 +47,7 @@ func newPAProc(sr int, gainDb float64, pa project.PA) *paProc {
 // paParallelMinFrames は、paProc.Process がチャンネルを並列に処理し始めるフレーム数(これ未満は直列)。
 const paParallelMinFrames = 4096
 
-// Process は buf(ステレオ)にその場でゲインとPA質感(低域カット → 低域シェルフ → 高域シェルフ → コンプ → 歪み)を掛ける。
+// Process は buf(ステレオ)にその場でゲインとPA質感(低域カット → 低域シェルフ → プレゼンス → 高域シェルフ → コンプ → 歪み)を掛ける。
 // ゲインとフィルタはチャンネルごとに独立(状態もチャンネルごと)なので、チャンネルを並列に処理する。
 // コンプ以降は、中でサンプル方向に並列化している(dsp.Compressor / dsp.Saturate)。結果は並列でも直列でも同じ。
 func (p *paProc) Process(buf [][]float32) {
@@ -78,7 +81,7 @@ func (p *paProc) filter(c int, ch []float32) {
 	}
 }
 
-// applyPA は音源にゲインを掛けてPA質感(低域カット → 低域シェルフ → 高域シェルフ → コンプ → 歪み)を付ける。
+// applyPA は音源にゲインを掛けてPA質感(低域カット → 低域シェルフ → プレゼンス → 高域シェルフ → コンプ → 歪み)を付ける。
 // paProc に全体を渡す包み。
 func applyPA(buf [][]float32, sr int, gainDb float64, pa project.PA) {
 	newPAProc(sr, gainDb, pa).Process(buf)

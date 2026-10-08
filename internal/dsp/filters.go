@@ -111,3 +111,19 @@ func LR4LowPass(x []float32, fs, f0 float64) { NewLR4LowPass(fs, f0).Process(x) 
 
 // LR4HighPass は4次のLinkwitz-Riley高域通過をその場で掛ける。
 func LR4HighPass(x []float32, fs, f0 float64) { NewLR4HighPass(fs, f0).Process(x) }
+
+// Peaking はRBJ cookbookのピーキングEQ。f0 を中心に gainDb だけ上げ下げする(q が大きいほど狭い)。
+// gainDb が 0 のときは恒等(呼び出し側は 0 のとき通さないこと。処理を省き、従来と同じ結果を保つ)。
+func Peaking(fs, f0, gainDb, q float64) *Biquad {
+	A := math.Pow(10, gainDb/40)
+	w := 2 * math.Pi * clampFreq(fs, f0) / fs
+	c, alpha := math.Cos(w), math.Sin(w)/(2*q)
+	return newBiquad(1+alpha*A, -2*c, 1-alpha*A, 1+alpha/A, -2*c, 1-alpha/A)
+}
+
+// FirstOrderShelf は1極1零のシェルフ H(s) = (1 + hfGain·s/ωc) / (1 + s/ωc)(ωc = 2π·fc)の双一次変換(プリワープなし)。
+// 直流のゲインは1、ナイキストでのゲインは hfGain(線形)。頭の影(球形頭部モデル)などに使う。
+func FirstOrderShelf(fs, fc, hfGain float64) *Biquad {
+	wc := 2 * math.Pi * fc
+	return newBiquad(wc+2*hfGain*fs, wc-2*hfGain*fs, 0, wc+2*fs, wc-2*fs, 0)
+}

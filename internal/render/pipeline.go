@@ -15,7 +15,6 @@ import (
 	"tottemolive/internal/audio"
 	"tottemolive/internal/dsp"
 	"tottemolive/internal/project"
-	"tottemolive/internal/venue"
 )
 
 // Render はプロジェクト全体をレンダリングする(キャッシュなし)。結果の音声をメモリに持つので、
@@ -288,7 +287,10 @@ func (e *Engine) renderTo(ctx context.Context, p project.Project, prog Progress,
 	needD, needR, needSpec := dSp == nil, rSp == nil, e.analyzePA && !hitSpec
 	needBus := needD || needR || needSpec
 
-	ir := venue.BuildIR(pp.pr, p.Reverb, sampleRate)
+	ir, err := reverbIR(ctx, pp)
+	if err != nil {
+		return nil, err
+	}
 	// 残響は直接音より先に届かない: 最初に届く音(いちばん近いメインスピーカーの直接音)から残響が始まる。
 	// プリディレイはそこからの遅れになる
 	revDelay := firstArrivalSamples(p)

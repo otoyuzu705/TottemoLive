@@ -84,7 +84,7 @@ func prepare(p project.Project) (*prepared, error) {
 	if !ok {
 		return nil, fmt.Errorf("render: 不明な会場 %q", p.Venue.Preset)
 	}
-	set, err := spatial.LoadSet(p.Spatial.HrirSet, sampleRate)
+	set, err := spatial.LoadSet(p.Spatial.HrirSet, sampleRate, spatial.SetOptions{HeadShadow: p.Spatial.HeadShadow})
 	if err != nil {
 		return nil, err
 	}
@@ -161,16 +161,24 @@ func (e *Engine) inputLevelStage(ctx context.Context, p project.Project, keys []
 func paKeyFor(p project.Project, keys []string, alignDb float64) string {
 	parts := make([]string, len(keys))
 	for i, k := range keys {
-		parts[i] = hashKey(k, p.Sources[i].GainDb, alignDb, p.PA)
+		parts[i] = hashKey(k, p.Sources[i].GainDb, alignDb, paKeyParams(p.PA))
 	}
 	return hashKey(parts)
+}
+
+// paKeyParams は、PA段のキーに入れる pa.*。プレゼンスの量が0なら、周波数とQは音に効かない(フィルタを通さない)ので入れない。
+func paKeyParams(pa project.PA) project.PA {
+	if pa.PresenceDb == 0 {
+		pa.PresenceHz, pa.PresenceQ = 0, 0
+	}
+	return pa
 }
 
 // paSpectrumKeyFor は、PA出力の帯域レベルのキー。読むもの: PAの出力だけ。座席・会場・残響・ミックス・マスターには依らない。
 func paSpectrumKeyFor(paKey string) string { return hashKey(paKey, "bands") }
 
 // directKeyFor は直接音のキー。
-// 読むもの: リスナー、メイン・サブの位置、sub.*、spatial.hrirSet / distanceRolloff / airAbsorption、PAの出力。
+// 読むもの: リスナー、メイン・サブの位置、sub.*、spatial.hrirSet / headShadow / distanceRolloff / airAbsorption / airCompensation(有効なときだけ airCompensationMaxDb も)、PAの出力。
 // (spatial.directLevelDb はミックス段が読む)
 // 左右のPAスピーカーを仮想スピーカーとして置き、リスナーの耳に届く直接音を作る。スピーカーが1本ならモノラル和を、
 // 2本以上ならチャンネルを順に割り当てる(L,R,L,R...)。サブウーファーが有効なときは、PA出力をクロスオーバーで分け、
@@ -184,13 +192,67 @@ func directKeyFor(pp *prepared, paKey string) string {
 		subs = nil
 	}
 	return hashKey(paKey, p.Venue.Preset, p.Listener, p.Venue.Speakers, subs, sub,
-		p.Spatial.HrirSet, p.Spatial.DistanceRolloff, p.Spatial.AirAbsorption)
+		p.Spatial.HrirSet, p.Spatial.HeadShadow, p.Spatial.DistanceRolloff, p.Spatial.AirAbsorption, airCompKey(p))
+}
+
+// airCompKey は、直接音のキーに入れる空気吸収の補正の設定。補正が無効(割合0または吸収なし)なら空
+// (上限は音に効かないので、無効のときに動かしても再計算しない)。スピーカー・会場の位置は別にキーへ入っている。
+func airCompKey(p project.Project) [2]float64 {
+	if p.Spatial.AirCompensation <= 0 || p.Spatial.AirAbsorption <= 0 {
+		return [2]float64{}
+	}
+	return [2]float64{p.Spatial.AirCompensation, p.Spatial.AirCompensationMaxDb}
+}
+
+// airCompFor は、スピーカー s の空気吸収の補正EQ。補正が無効(割合0・吸収なし)なら空(キーにも効かない)。
+func airCompFor(p project.Project, pr venue.Preset, s project.Speaker) spatial.AirComp {
+	if p.Spatial.AirCompensation <= 0 || p.Spatial.AirAbsorption <= 0 {
+		return spatial.AirComp{}
+	}
+	ref := fohReference(pr)
+	d := math.Sqrt((s.X-ref[0])*(s.X-ref[0]) + (s.Y-ref[1])*(s.Y-ref[1]) + (s.Z-ref[2])*(s.Z-ref[2]))
+	return spatial.AirComp{RefDistM: d, Amount: p.Spatial.AirCompensation, MaxBoostDb: p.Spatial.AirCompensationMaxDb}
+}
+
+// radiatedAirComp は、残響を励起する音(放射された音)に掛ける補正EQ。メインの基準点までの距離の平均で決める。
+// 無効(割合0・吸収なし・スピーカーなし)なら空。座席には依らない。
+func radiatedAirComp(p project.Project, pr venue.Preset) spatial.AirComp {
+	if len(p.Venue.Speakers) == 0 {
+		return spatial.AirComp{}
+	}
+	sum := 0.0
+	for _, s := range p.Venue.Speakers {
+		sum += airCompFor(p, pr, s).RefDistM
+	}
+	c := airCompFor(p, pr, p.Venue.Speakers[0])
+	c.RefDistM = sum / float64(len(p.Venue.Speakers))
+	return c
+}
+
+// reverbIR は会場IRに、空気吸収の補正EQ(有効なとき)を畳み込んだもの。長さは venue.BuildIR と同じ
+// (線形位相FIRの群遅延ぶん前を捨て、末尾の同じ長さを捨てる)。無効なら BuildIR の結果そのもの。
+// 残響の入力(放射された音)にFIRを掛けるのと同じ結果になる。
+func reverbIR(ctx context.Context, pp *prepared) ([][]float32, error) {
+	ir := venue.BuildIR(pp.pr, pp.p.Reverb, sampleRate)
+	fir := spatial.AirCompFIR(radiatedAirComp(pp.p, pp.pr), pp.p.Spatial.AirAbsorption, sampleRate)
+	if fir == nil {
+		return ir, nil
+	}
+	for c := range ir {
+		y, err := dsp.Convolve(ctx, ir[c], fir)
+		if err != nil {
+			return nil, err
+		}
+		ir[c] = y[spatial.AirGroupDelay : spatial.AirGroupDelay+len(ir[c])]
+	}
+	return ir, nil
 }
 
 // reverbKeyFor は残響のキー。スピーカーから放射された音(radiatedProc)を会場IR(左右)で畳み込む。
 // 残響は距離減衰を掛ける前の信号で駆動する(拡散音場のレベルは距離に依らないため)。
 // 読むもの: 会場、reverb.preDelayMs / decayScale / highDampHz / low*(低域の残響) / high*(高域の残響)、
-// sub.*(サブが有効か・レベル・クロスオーバー。サブの低域も会場を励起するので残響に入る)、PAの出力。
+// sub.*(サブが有効か・レベル・クロスオーバー。サブの低域も会場を励起するので残響に入る)、
+// 空気吸収の補正が有効なときだけ、補正EQ(メインの位置・会場で決まる)と spatial.airAbsorption、PAの出力。
 // (reverb.mix はミックス段)
 func reverbKeyFor(pp *prepared, paKey string) string {
 	r := pp.p.Reverb
@@ -199,12 +261,17 @@ func reverbKeyFor(pp *prepared, paKey string) string {
 	if !active {
 		sub = project.Sub{} // サブが無効なら、サブの設定は残響に影響しない(キーにも入れない)
 	}
+	// 空気吸収の補正(残響の励起に掛かる)は、有効なときだけキーに入れる(無効なら、スピーカー位置と吸収の倍率で再計算しない)
+	comp, air := radiatedAirComp(pp.p, pp.pr), 0.0
+	if comp != (spatial.AirComp{}) {
+		air = pp.p.Spatial.AirAbsorption
+	}
 	return hashKey(paKey, pp.p.Venue.Preset, r.PreDelayMs, r.DecayScale, r.HighDampHz,
-		r.LowCoherence, r.LowDecayScale, r.LowLevelDb, r.LowCrossoverHz, r.HighDecayScale, r.HighDecayHz, active, sub)
+		r.LowCoherence, r.LowDecayScale, r.LowLevelDb, r.LowCrossoverHz, r.HighDecayScale, r.HighDecayHz, active, sub, comp, air)
 }
 
-// subAlignReference は、サブをメインに時間合わせする基準点(現場のFOH: 客席の中央、奥行きの半分、耳の高さ)。
-func subAlignReference(pr venue.Preset) [3]float64 {
+// fohReference は、サブの時間合わせと空気吸収の補正の基準点(現場のFOH: 客席の中央、奥行きの半分、耳の高さ)。
+func fohReference(pr venue.Preset) [3]float64 {
 	return [3]float64{0, pr.DepthM / 2, 1.2}
 }
 
@@ -217,7 +284,7 @@ func subAlignDelays(p project.Project, pr venue.Preset) []int {
 		}
 		return out
 	}
-	return spatial.SubAlignDelays(subAlignReference(pr), pos(p.Venue.Speakers), pos(p.Venue.Subs), sampleRate)
+	return spatial.SubAlignDelays(fohReference(pr), pos(p.Venue.Speakers), pos(p.Venue.Subs), sampleRate)
 }
 
 // subsActive はサブウーファー経路が有効か(有効にしてあり、サブが1台以上ある)。

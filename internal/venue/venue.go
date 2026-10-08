@@ -169,6 +169,7 @@ const highDecayStages = 3
 // 高域の残響時間の節点は、highHz から1オクターブを highDecayStages 等分した highDecayStages+1 点
 // (highHz·2^(k/highDecayStages))。節点 k の残響時間は 中域の highScale^(k/highDecayStages) 倍
 // (k=0 が1倍、最後が highScale 倍)。
+
 // highDecayPos は周波数 f(Hz)の、節点の並びの上での位置(0〜highDecayStages)。
 // f が最初の節点(highHz)以下なら 0、最後の節点(highHz の2倍)以上なら highDecayStages。
 func highDecayPos(f, highHz float64) float64 {

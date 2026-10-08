@@ -38,6 +38,24 @@ func AirAbsorptionDbPerM(f float64) float64 {
 		math.Pow(t/t0, -2.5)*(0.01275*math.Exp(-2239.1/t)/(frO+f2/frO)+0.1068*math.Exp(-3352/t)/(frN+f2/frN)))
 }
 
+// AirComp は、PAが基準点(FOH)で聴いて、空気吸収で失われる高域を補うEQ。
+type AirComp struct {
+	RefDistM   float64 // スピーカーから基準点までの距離(m)
+	Amount     float64 // 補正の割合(spatial.airCompensation、0〜1)
+	MaxBoostDb float64 // 持ち上げの上限(spatial.airCompensationMaxDb)
+}
+
+// active は補正が効くか(割合・距離・吸収の倍率がどれも正)。
+func (c AirComp) active(scale float64) bool { return c.Amount > 0 && c.RefDistM > 0 && scale > 0 }
+
+// BoostDb は周波数 f(Hz)での補正の持ち上げ量(dB、0以上)。scale は spatial.airAbsorption。
+func (c AirComp) BoostDb(f, scale float64) float64 {
+	if !c.active(scale) {
+		return 0
+	}
+	return math.Min(c.Amount*scale*AirAbsorptionDbPerM(f)*c.RefDistM, c.MaxBoostDb)
+}
+
 // AirFIR は、距離 dist(m)を進んだ音が空気に吸収される高域の減衰を表す線形位相FIR(長さ airTaps、直流ゲイン1)。
 // 各周波数の減衰は scale × α(f) × dist(dB。scale=1 で物理値)で、周波数サンプリングで設計して窓を掛ける。
 // dist または scale が 0 以下なら nil(吸収なし)。
@@ -45,10 +63,41 @@ func AirFIR(dist, scale float64, sr int) []float32 {
 	if dist <= 0 || scale <= 0 {
 		return nil
 	}
+	return designAirFIR(sr, func(f float64) float64 {
+		return math.Min(scale*AirAbsorptionDbPerM(f)*dist, airMaxAttnDb)
+	})
+}
+
+// AirFIRComp は AirFIR に補正EQを合わせた線形位相FIR(各周波数の減衰 = min(scale·α(f)·dist, airMaxAttnDb) − 補正)。
+// 補正が効かないときは AirFIR と同じ(ビット一致)。dist・scale が 0 以下なら nil。
+func AirFIRComp(dist, scale float64, comp AirComp, sr int) []float32 {
+	if dist <= 0 || scale <= 0 {
+		return nil
+	}
+	return designAirFIR(sr, func(f float64) float64 {
+		attn := math.Min(scale*AirAbsorptionDbPerM(f)*dist, airMaxAttnDb)
+		if comp.active(scale) {
+			attn -= comp.BoostDb(f, scale)
+		}
+		return attn
+	})
+}
+
+// AirCompFIR は補正EQだけの線形位相FIR(長さ airTaps、群遅延 AirGroupDelay)。残響の励起に使う。補正が効かなければ nil。
+func AirCompFIR(comp AirComp, scale float64, sr int) []float32 {
+	if !comp.active(scale) {
+		return nil
+	}
+	return designAirFIR(sr, func(f float64) float64 { return -comp.BoostDb(f, scale) })
+}
+
+// designAirFIR は、周波数 f(Hz)の減衰 attnDb(f)(dB、負なら持ち上げ)を持つ線形位相FIR(長さ airTaps、直流ゲイン1)を、
+// 周波数サンプリングで設計して窓を掛けて作る。
+func designAirFIR(sr int, attnDb func(f float64) float64) []float32 {
 	// 周波数応答(振幅)を、0〜ナイキストの片側のbinに並べる。位相はゼロ(あとで中心にずらして線形位相にする)
 	spec := make([]complex128, airGrid/2+1)
 	for k := range spec {
-		attn := math.Min(scale*AirAbsorptionDbPerM(float64(k)*float64(sr)/airGrid)*dist, airMaxAttnDb)
+		attn := attnDb(float64(k) * float64(sr) / airGrid)
 		spec[k] = complex(math.Pow(10, -attn/20), 0)
 	}
 	imp := fourier.NewFFT(airGrid).Sequence(nil, spec) // ゼロ位相のインパルス応答(循環)。正規化は airGrid で割る

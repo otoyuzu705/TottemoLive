@@ -29,14 +29,29 @@ type Set interface {
 	Lookup(azDeg, elDeg float64) HRIR
 }
 
-// SetNames は読み込める同梱HRIRセットの名前。
-func SetNames() []string { return []string{"synthetic"} }
+const (
+	SyntheticName = "synthetic"
+	BrownDudaName = "brown-duda"
+)
+
+// SetNames は読み込める同梱HRIRセットの名前。params の spatial.hrirSet の選択肢と同じ順(テストで確認)。
+func SetNames() []string { return []string{SyntheticName, BrownDudaName} }
+
+// SetOptions はHRIRセットの調整(Project の spatial.* から作る)。
+type SetOptions struct {
+	// HeadShadow は頭の影(反対側の耳の高域の遮りと、同じ側の耳の持ち上がり)の強さ。dBで表した影の量の倍率で、
+	// 1 でモデルの値、0 で影なし(両耳間時間差だけ)。spatial.headShadow。
+	HeadShadow float64
+}
 
 // LoadSet はHRIRセットを返す。同梱の実測HRIR(WAV + JSON)は素材ごとの再配布条件を確認してから追加する。
-func LoadSet(name string, sr int) (Set, error) {
+// Set は方向ごとのHRIRを作って保持するので、o が違えば別の Set を作る(レンダリングごとに作る)。
+func LoadSet(name string, sr int, o SetOptions) (Set, error) {
 	switch name {
-	case "synthetic":
-		return newSynthetic(sr), nil
+	case SyntheticName:
+		return newSynthetic(sr, o.HeadShadow), nil
+	case BrownDudaName:
+		return newBrownDuda(sr, o.HeadShadow), nil
 	}
 	return nil, fmt.Errorf("spatial: unknown HRIR set %q", name)
 }
@@ -70,6 +85,7 @@ func Direction(lx, ly, lz, yawDeg, px, py, pz float64) (azDeg, elDeg, dist float
 type DirectParams struct {
 	Rolloff       float64 // spatial.distanceRolloff
 	AirAbsorption float64 // spatial.airAbsorption
+	AirComp       AirComp // 基準点(FOH)での空気吸収の補正(空なら補正なし)
 }
 
 // DirectStream は仮想スピーカー1本ぶんの直接音を、入力を区切って順に Process しながら計算する。
@@ -87,7 +103,7 @@ type DirectStream struct {
 // NewDirectStream は、距離 dist(m)・方位 azDeg・仰角 elDeg のスピーカーの直接音を計算する処理器を返す。
 func NewDirectStream(sr int, dist, azDeg, elDeg float64, set Set, p DirectParams) *DirectStream {
 	// 空気吸収(線形位相FIR)の群遅延ぶん、伝搬遅延から引いて、全体の遅れを合わせる(近すぎて引けないぶんは遅れる)
-	air := AirFIR(dist, p.AirAbsorption, sr)
+	air := AirFIRComp(dist, p.AirAbsorption, p.AirComp, sr)
 	delay := DelaySamples(dist, sr)
 	lead := 0
 	if air != nil {

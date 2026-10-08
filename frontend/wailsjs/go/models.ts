@@ -166,6 +166,9 @@ export namespace project {
 	    lowCutHz: number;
 	    lowShelfHz: number;
 	    lowShelfDb: number;
+	    presenceHz: number;
+	    presenceDb: number;
+	    presenceQ: number;
 	    highShelfHz: number;
 	    highShelfDb: number;
 	    compThresholdDb: number;
@@ -185,6 +188,9 @@ export namespace project {
 	        this.lowCutHz = source["lowCutHz"];
 	        this.lowShelfHz = source["lowShelfHz"];
 	        this.lowShelfDb = source["lowShelfDb"];
+	        this.presenceHz = source["presenceHz"];
+	        this.presenceDb = source["presenceDb"];
+	        this.presenceQ = source["presenceQ"];
 	        this.highShelfHz = source["highShelfHz"];
 	        this.highShelfDb = source["highShelfDb"];
 	        this.compThresholdDb = source["compThresholdDb"];
@@ -226,8 +232,11 @@ export namespace project {
 	}
 	export class Spatial {
 	    hrirSet: string;
+	    headShadow: number;
 	    distanceRolloff: number;
 	    airAbsorption: number;
+	    airCompensation: number;
+	    airCompensationMaxDb: number;
 	    directLevelDb: number;
 	
 	    static createFrom(source: any = {}) {
@@ -237,8 +246,11 @@ export namespace project {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.hrirSet = source["hrirSet"];
+	        this.headShadow = source["headShadow"];
 	        this.distanceRolloff = source["distanceRolloff"];
 	        this.airAbsorption = source["airAbsorption"];
+	        this.airCompensation = source["airCompensation"];
+	        this.airCompensationMaxDb = source["airCompensationMaxDb"];
 	        this.directLevelDb = source["directLevelDb"];
 	    }
 	}

@@ -70,7 +70,10 @@ func (e *Engine) previewWindowOnce(ctx context.Context, p project.Project, start
 	}
 	defer release()
 	songLen := paSp.meta.SongLen
-	ir := venue.BuildIR(pp.pr, p.Reverb, sampleRate)
+	ir, err := reverbIR(ctx, pp)
+	if err != nil {
+		return nil, err
+	}
 	revDelay := firstArrivalSamples(p)
 	outLen := songLen + revDelay + len(ir[0])
 

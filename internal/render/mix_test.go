@@ -119,7 +119,7 @@ func TestSubAlignIsFixedToTheReferencePoint(t *testing.T) {
 		}
 	}
 	// 基準点の位置: 客席の中央(x=0)、奥行きの半分
-	if ref := subAlignReference(arena); ref[0] != 0 || ref[1] != arena.DepthM/2 {
+	if ref := fohReference(arena); ref[0] != 0 || ref[1] != arena.DepthM/2 {
 		t.Errorf("reference %v", ref)
 	}
 	// 基準点にいるとき、左右のサブは同じ時刻に届き、横にずれた席では食い違う
