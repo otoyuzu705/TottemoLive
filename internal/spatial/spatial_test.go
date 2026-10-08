@@ -49,7 +49,7 @@ func TestDirection(t *testing.T) {
 }
 
 func TestSyntheticHRIRLateralization(t *testing.T) {
-	set, _ := LoadSet("synthetic", 48000)
+	set, _ := LoadSet("synthetic", 48000, SetOptions{HeadShadow: 1})
 	h := set.Lookup(90, 0) // 真右
 	if energy(h.R) <= energy(h.L)*1.5 {
 		t.Errorf("right ear should be louder: R=%v L=%v", energy(h.R), energy(h.L))
@@ -96,7 +96,7 @@ func TestDistanceModel(t *testing.T) {
 }
 
 func TestDirect(t *testing.T) {
-	set, _ := LoadSet("synthetic", 48000)
+	set, _ := LoadSet("synthetic", 48000, SetOptions{HeadShadow: 1})
 	in := make([]float32, 4800)
 	in[0] = 1
 	out, err := Direct(context.Background(), in, 48000, 34.3, 90, 0, set, DirectParams{Rolloff: 1})

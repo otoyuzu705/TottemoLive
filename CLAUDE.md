@@ -10,7 +10,7 @@ M1(エンジンとCLI)とM2(Wails骨格・音作りパネル・曲全体のプ�
 
 アプリの設定(ディスクキャッシュの使用・置き場所)は `os.UserConfigDir()/TottemoLive/settings.json`。設定ダイアログ(ヘッダーの「設定…」)と `App` の `GetSettings` / `SetSettings` / `GetCacheInfo` / `ClearCache` / `PickCacheDir`、CLIの環境変数 `TOTTEMOLIVE_CACHE_DIR` / `TOTTEMOLIVE_CACHE=off` から使う。
 
-M1時点の暫定: 実測のHRIR・会場IRは再配布条件が未確認で同梱していないため、いずれも合成で代用している(HRIRは球形頭部モデル `spatial/synthetic.go`、会場IRは残響時間からの合成 `venue.BuildIR`)。実素材を同梱するときは `assets/` に置き、`spatial.LoadSet` などを差し替える。
+M1時点の暫定: 実測のHRIR・会場IRは再配布条件が未確認で同梱していないため、いずれも合成で代用している(HRIRは球形頭部モデル(既定の `spatial/synthetic.go` と、Brown–Duda の `spatial/brownduda.go`)、会場IRは残響時間からの合成 `venue.BuildIR`)。実素材を同梱するときは `assets/` に置き、`spatial.LoadSet` などを差し替える。
 
 ## コマンド
 

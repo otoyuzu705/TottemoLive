@@ -65,7 +65,8 @@ var specs = []ParamSpec{
 	logScale(f("sub.crossoverHz", "クロスオーバー周波数", "sub", "Hz", 50, 150, 1, 90)),
 
 	{Path: "spatial.hrirSet", Label: "HRIRの種類", Group: "spatial", Kind: KindEnum,
-		Options: []string{"synthetic"}, Default: 0, Scale: "linear"},
+		Options: []string{"synthetic", "brown-duda"}, Default: 0, Scale: "linear"},
+	f("spatial.headShadow", "頭の影の強さ", "spatial", "", 0, 1.5, 0.05, 1.0),
 	f("spatial.distanceRolloff", "距離減衰の強さ", "spatial", "", 0, 1.5, 0.05, 1.0),
 	f("spatial.airAbsorption", "空気吸収の強さ", "spatial", "", 0, 2, 0.05, 1.0),
 	f("spatial.directLevelDb", "直接音レベル", "spatial", "dB", -12, 6, 0.5, 0),

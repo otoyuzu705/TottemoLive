@@ -84,7 +84,7 @@ func prepare(p project.Project) (*prepared, error) {
 	if !ok {
 		return nil, fmt.Errorf("render: 不明な会場 %q", p.Venue.Preset)
 	}
-	set, err := spatial.LoadSet(p.Spatial.HrirSet, sampleRate)
+	set, err := spatial.LoadSet(p.Spatial.HrirSet, sampleRate, spatial.SetOptions{HeadShadow: p.Spatial.HeadShadow})
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +184,7 @@ func directKeyFor(pp *prepared, paKey string) string {
 		subs = nil
 	}
 	return hashKey(paKey, p.Venue.Preset, p.Listener, p.Venue.Speakers, subs, sub,
-		p.Spatial.HrirSet, p.Spatial.DistanceRolloff, p.Spatial.AirAbsorption)
+		p.Spatial.HrirSet, p.Spatial.HeadShadow, p.Spatial.DistanceRolloff, p.Spatial.AirAbsorption)
 }
 
 // reverbKeyFor は残響のキー。スピーカーから放射された音(radiatedProc)を会場IR(左右)で畳み込む。

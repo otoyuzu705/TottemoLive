@@ -29,14 +29,29 @@ type Set interface {
 	Lookup(azDeg, elDeg float64) HRIR
 }
 
-// SetNames は読み込める同梱HRIRセットの名前。
-func SetNames() []string { return []string{"synthetic"} }
+const (
+	SyntheticName = "synthetic"
+	BrownDudaName = "brown-duda"
+)
+
+// SetNames は読み込める同梱HRIRセットの名前。params の spatial.hrirSet の選択肢と同じ順(テストで確認)。
+func SetNames() []string { return []string{SyntheticName, BrownDudaName} }
+
+// SetOptions はHRIRセットの調整(Project の spatial.* から作る)。
+type SetOptions struct {
+	// HeadShadow は頭の影(反対側の耳の高域の遮りと、同じ側の耳の持ち上がり)の強さ。dBで表した影の量の倍率で、
+	// 1 でモデルの値、0 で影なし(両耳間時間差だけ)。spatial.headShadow。
+	HeadShadow float64
+}
 
 // LoadSet はHRIRセットを返す。同梱の実測HRIR(WAV + JSON)は素材ごとの再配布条件を確認してから追加する。
-func LoadSet(name string, sr int) (Set, error) {
+// Set は方向ごとのHRIRを作って保持するので、o が違えば別の Set を作る(レンダリングごとに作る)。
+func LoadSet(name string, sr int, o SetOptions) (Set, error) {
 	switch name {
-	case "synthetic":
-		return newSynthetic(sr), nil
+	case SyntheticName:
+		return newSynthetic(sr, o.HeadShadow), nil
+	case BrownDudaName:
+		return newBrownDuda(sr, o.HeadShadow), nil
 	}
 	return nil, fmt.Errorf("spatial: unknown HRIR set %q", name)
 }

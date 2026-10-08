@@ -60,7 +60,7 @@ func equalSlices(a, b []float32) (int, bool) {
 
 func TestDirectStreamMatchesRef(t *testing.T) {
 	const sr = 48000
-	set, err := LoadSet("synthetic", sr)
+	set, err := LoadSet("synthetic", sr, SetOptions{HeadShadow: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

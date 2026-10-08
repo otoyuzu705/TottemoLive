@@ -226,6 +226,7 @@ export namespace project {
 	}
 	export class Spatial {
 	    hrirSet: string;
+	    headShadow: number;
 	    distanceRolloff: number;
 	    airAbsorption: number;
 	    directLevelDb: number;
@@ -237,6 +238,7 @@ export namespace project {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.hrirSet = source["hrirSet"];
+	        this.headShadow = source["headShadow"];
 	        this.distanceRolloff = source["distanceRolloff"];
 	        this.airAbsorption = source["airAbsorption"];
 	        this.directLevelDb = source["directLevelDb"];

@@ -78,6 +78,7 @@ type Sub struct {
 
 type Spatial struct {
 	HrirSet         string  `json:"hrirSet"`
+	HeadShadow      float64 `json:"headShadow"`
 	DistanceRolloff float64 `json:"distanceRolloff"`
 	AirAbsorption   float64 `json:"airAbsorption"`
 	DirectLevelDb   float64 `json:"directLevelDb"`

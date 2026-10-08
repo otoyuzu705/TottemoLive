@@ -73,7 +73,7 @@ func TestAirFIRMatchesTarget(t *testing.T) {
 // Direct: 100 m 先では 8 kHz が物理値ぶん(約 -8 dB 以上)落ち、近いと落ちない。到着時刻は吸収の有無で変わらない。
 func TestDirectAirAbsorption(t *testing.T) {
 	const sr = 48000
-	set, _ := LoadSet("synthetic", sr)
+	set, _ := LoadSet("synthetic", sr, SetOptions{HeadShadow: 1})
 	in := make([]float32, 8192)
 	for i := range in {
 		in[i] = float32(math.Sin(2 * math.Pi * 8000 * float64(i) / sr))

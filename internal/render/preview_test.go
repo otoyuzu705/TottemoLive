@@ -49,6 +49,10 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 		{"venue.subs", func(p *project.Project) { p.Venue.Subs[0].X = -3 }, []string{"direct"}},
 		{"spatial.distanceRolloff", func(p *project.Project) { p.Spatial.DistanceRolloff = 0.5 }, []string{"direct"}},
 		{"listener", func(p *project.Project) { p.Listener.X = 3 }, []string{"direct"}},
+		{"spatial.hrirSet", func(p *project.Project) { p.Spatial.HrirSet = "brown-duda" }, []string{"direct"}},
+		{"spatial.headShadow", func(p *project.Project) { p.Spatial.HeadShadow = 0.5 }, []string{"direct"}},
+		{"spatial.airAbsorption", func(p *project.Project) { p.Spatial.AirAbsorption = 0.5 }, []string{"direct"}},
+		{"venue.speakers", func(p *project.Project) { p.Venue.Speakers[0].X = -2 }, []string{"direct"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

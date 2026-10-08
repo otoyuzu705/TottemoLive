@@ -111,3 +111,10 @@ func LR4LowPass(x []float32, fs, f0 float64) { NewLR4LowPass(fs, f0).Process(x) 
 
 // LR4HighPass は4次のLinkwitz-Riley高域通過をその場で掛ける。
 func LR4HighPass(x []float32, fs, f0 float64) { NewLR4HighPass(fs, f0).Process(x) }
+
+// FirstOrderShelf は1極1零のシェルフ H(s) = (1 + hfGain·s/ωc) / (1 + s/ωc)(ωc = 2π·fc)の双一次変換(プリワープなし)。
+// 直流のゲインは1、ナイキストでのゲインは hfGain(線形)。頭の影(球形頭部モデル)などに使う。
+func FirstOrderShelf(fs, fc, hfGain float64) *Biquad {
+	wc := 2 * math.Pi * fc
+	return newBiquad(wc+2*hfGain*fs, wc-2*hfGain*fs, 0, wc+2*fs, wc-2*fs, 0)
+}
