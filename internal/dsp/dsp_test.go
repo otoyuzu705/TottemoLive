@@ -488,3 +488,39 @@ func TestPeaking(t *testing.T) {
 		}
 	}
 }
+
+// firDb はFIR h の周波数 f(Hz)での振幅(dB)。
+func firDb(h []float32, f float64, sr int) float64 {
+	var s complex128
+	for n, v := range h {
+		s += complex(float64(v), 0) * cmplx.Exp(complex(0, -2*math.Pi*f*float64(n)/float64(sr)))
+	}
+	return 20 * math.Log10(cmplx.Abs(s))
+}
+
+func nearDb(t *testing.T, what string, got, want, tol float64) {
+	t.Helper()
+	if math.Abs(got-want) > tol {
+		t.Errorf("%s: %.2f, want %.2f ± %.2f", what, got, want, tol)
+	}
+}
+
+func TestFirstOrderShelf(t *testing.T) {
+	// 直流 0 dB、ナイキストで hfGain、中間は単調
+	for _, g := range []float64{0.1, 0.5, 2} {
+		b := FirstOrderShelf(48000, 1248, g)
+		h := make([]float32, 4096)
+		h[0] = 1
+		b.Process(h)
+		nearDb(t, "dc", firDb(h, 0, 48000), 0, 1e-3)
+		nearDb(t, "nyquist", firDb(h, 24000, 48000), 20*math.Log10(g), 0.05)
+		prev := 0.0
+		for _, f := range []float64{100, 500, 1248, 3000, 8000, 16000, 23000} {
+			d := firDb(h, f, 48000)
+			if (d-prev)*(math.Log10(g)) < -1e-9 {
+				t.Errorf("g=%v not monotonic at %v Hz", g, f)
+			}
+			prev = d
+		}
+	}
+}

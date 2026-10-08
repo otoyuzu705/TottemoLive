@@ -135,7 +135,11 @@ func bandCorr(ir [][]float32, fc float64) float64 {
 
 // bandRT は帯域内の残響時間(シュレーダー積分のT30を2倍、秒)。
 func bandRT(ir []float32, fc float64) float64 {
-	x := bandpass(ir, fc)
+	return schroederRT(bandpass(ir, fc))
+}
+
+// schroederRT は帯域を取り出した信号 x の残響時間(シュレーダー積分のT30を2倍、秒)。
+func schroederRT(x []float32) float64 {
 	e := make([]float64, len(x)+1)
 	for i := len(x) - 1; i >= 0; i-- {
 		e[i] = e[i+1] + float64(x[i])*float64(x[i])
@@ -393,6 +397,57 @@ func thirdOctCenters(k0, k1 int) []float64 {
 	return fcs
 }
 
+// narrowBandRT は中心 fc の狭帯域(±1/12 オクターブ、ブラックマン窓付きsincのFIR)の残響時間。
+// オクターブ帯域(bandRT)と違い、節点の間の混ざりをほとんど含まない。
+func narrowBandRT(ir []float32, fc float64) float64 {
+	const fs = 48000.0
+	lo, hi := fc*math.Pow(2, -1.0/12)/fs, fc*math.Pow(2, 1.0/12)/fs // 正規化周波数(cycles/sample)
+	taps := int(6/(hi-lo)) | 1
+	h := make([]float64, taps)
+	m := float64(taps-1) / 2
+	for i := range h {
+		t := float64(i) - m
+		sinc := func(f float64) float64 {
+			if t == 0 {
+				return 2 * f
+			}
+			return math.Sin(2*math.Pi*f*t) / (math.Pi * t)
+		}
+		w := 0.42 - 0.5*math.Cos(2*math.Pi*float64(i)/float64(taps-1)) + 0.08*math.Cos(4*math.Pi*float64(i)/float64(taps-1))
+		h[i] = (sinc(hi) - sinc(lo)) * w
+	}
+	x := make([]float32, len(ir))
+	for n := range x {
+		var acc float64
+		for k := 0; k < taps && k <= n; k++ {
+			acc += h[k] * float64(ir[n-k])
+		}
+		x[n] = float32(acc)
+	}
+	return schroederRT(x)
+}
+
+// 節点(highDecayHz=4000 の 5.04k / 6.35k / 8k)の残響時間は、1 kHz 比で scale^(k/3) になる。
+func TestBuildIRNodeDecayTimes(t *testing.T) {
+	pr, _ := Get("hall")
+	for _, scale := range []float64{0.3, 0.6} {
+		r := pr.Reverb
+		r.HighDecayScale, r.HighDecayHz = scale, 4000
+		r.LowDecayScale = 1
+		r.HighDampHz = 16000
+		ir := BuildIR(pr, r, 48000)
+		mid := narrowBandRT(ir[0], 1000)
+		for k := 1; k <= 3; k++ {
+			fc := 4000 * math.Pow(2, float64(k)/3)
+			got, want := narrowBandRT(ir[0], fc)/mid, math.Pow(scale, float64(k)/3)
+			t.Logf("scale %v: %.0f Hz RT ratio %.3f (target %.3f)", scale, fc, got, want)
+			if math.Abs(got-want) > 0.05 {
+				t.Errorf("scale %v: %.0f Hz RT / 1 kHz RT = %.2f, want %.2f ± 0.05", scale, fc, got, want)
+			}
+		}
+	}
+}
+
 func TestHighDecayWeightsSumToOne(t *testing.T) {
 	for _, hz := range []float64{2000, 4000, 12000} {
 		for f := 0.0; f <= 24000; f += 7.3 {
@@ -442,16 +497,58 @@ func TestSplitByNodesSumsToInput(t *testing.T) {
 	}
 }
 
+// 成分 k のスペクトルは nodeWeight(pos[b], k)·X[b] になる(重みが0の bin のパワーは ~0)。
+// 最後の成分は引き算で作るので、和が入力に戻る検査だけでは、成分のスペクトルが正しいことは確かめられない。
+// 切り詰め(n < N)はスペクトルを広げるので、ここでは n = N で全長を取り出す。
+func TestSplitByNodesSpectra(t *testing.T) {
+	const N = 1 << 13
+	rng := rand.New(rand.NewSource(2))
+	x := make([]float32, N)
+	buf := make([]float64, N)
+	for i := range x {
+		x[i] = float32(rng.Float64()*2 - 1)
+		buf[i] = float64(x[i])
+	}
+	pos := make([]float64, N/2+1)
+	for b := range pos {
+		pos[b] = highDecayPos(float64(b)*48000/N, 4000)
+	}
+	fft := fourier.NewFFT(N)
+	X := fft.Coefficients(nil, buf)
+	for k, p := range splitByNodes(x, pos, N) {
+		for i, v := range p {
+			buf[i] = float64(v)
+		}
+		Y := fft.Coefficients(nil, buf)
+		var zeroPow, refPow, worstErr float64
+		for b := range Y {
+			w := nodeWeight(pos[b], k)
+			zeroPow += (1 - math.Min(w*1e9, 1)) * (real(Y[b])*real(Y[b]) + imag(Y[b])*imag(Y[b]))
+			refPow += real(X[b])*real(X[b]) + imag(X[b])*imag(X[b])
+			d := Y[b] - X[b]*complex(w, 0)
+			worstErr = math.Max(worstErr, math.Hypot(real(d), imag(d)))
+		}
+		if worstErr > 1e-3 {
+			t.Errorf("component %d: spectrum differs from weight*X by %g", k, worstErr)
+		}
+		if zeroPow/refPow > 1e-10 {
+			t.Errorf("component %d: power outside its weight support is %g of the input", k, zeroPow/refPow)
+		}
+	}
+}
+
 // 高域の減衰を無効(scale 1・ダンプ最大)にしたIRは、2〜10 kHz が平坦になる(帯域分割の打ち消しで穴が空かない)。
 func TestBuildIRFlatHighBand(t *testing.T) {
 	for _, pr := range List() {
-		r := pr.Reverb
-		r.HighDecayScale, r.HighDampHz = 1, 16000
-		d := thirdOctDensity(BuildIR(pr, r, 48000), 48000, thirdOctCenters(0, 10))
-		ref := (d[0] + d[1] + d[2] + d[3]) / 4
-		for k := 3; k <= 10; k++ {
-			if dev := d[k] - ref; math.Abs(dev) > 1.2 {
-				t.Errorf("%s: %.0f Hz band is %+.1f dB from the 1-2 kHz level", pr.ID, 1000*math.Pow(2, float64(k)/3), dev)
+		for _, hz := range []float64{2000, 4000, 12000} { // 境界周波数を変えても平坦
+			r := pr.Reverb
+			r.HighDecayScale, r.HighDampHz, r.HighDecayHz = 1, 16000, hz
+			d := thirdOctDensity(BuildIR(pr, r, 48000), 48000, thirdOctCenters(0, 10))
+			ref := (d[0] + d[1] + d[2] + d[3]) / 4
+			for k := 3; k <= 10; k++ {
+				if dev := d[k] - ref; math.Abs(dev) > 1.2 {
+					t.Errorf("%s (highDecayHz %v): %.0f Hz band is %+.1f dB from the 1-2 kHz level", pr.ID, hz, 1000*math.Pow(2, float64(k)/3), dev)
+				}
 			}
 		}
 	}

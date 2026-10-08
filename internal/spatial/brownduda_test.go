@@ -34,26 +34,6 @@ func near(t *testing.T, what string, got, want, tol float64) {
 	}
 }
 
-func TestFirstOrderShelf(t *testing.T) {
-	// 直流 0 dB、ナイキストで hfGain、中間は単調
-	for _, g := range []float64{0.1, 0.5, 2} {
-		b := dsp.FirstOrderShelf(48000, 1248, g)
-		h := make([]float32, 4096)
-		h[0] = 1
-		b.Process(h)
-		near(t, "dc", respDb(h, 0, 48000), 0, 1e-3)
-		near(t, "nyquist", respDb(h, 24000, 48000), 20*math.Log10(g), 0.05)
-		prev := 0.0
-		for _, f := range []float64{100, 500, 1248, 3000, 8000, 16000, 23000} {
-			d := respDb(h, f, 48000)
-			if (d-prev)*(math.Log10(g)) < -1e-9 {
-				t.Errorf("g=%v not monotonic at %v Hz", g, f)
-			}
-			prev = d
-		}
-	}
-}
-
 func TestBrownDudaShadow(t *testing.T) {
 	set := mustSet(t, BrownDudaName, 1)
 	h := set.Lookup(90, 0) // 真右
