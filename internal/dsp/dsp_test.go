@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/cmplx"
 	"math/rand"
 	"testing"
 )
@@ -432,5 +433,58 @@ func TestTruePeakLimitNoise(t *testing.T) {
 	t.Logf("noise: reference true peak %.2f dBTP (ceiling -1)", LinToDb(got))
 	if got > ceil*1.12 { // +1 dB まで(測定は約0.8 dB)
 		t.Errorf("noise true peak %.2f dBTP", LinToDb(got))
+	}
+}
+
+// gainAt は双二次フィルタの周波数 f(Hz)での振幅(dB)。f が 0 や fs/2 のときも係数から直接計算する。
+func (b *Biquad) gainAt(fs, f float64) float64 {
+	w := 2 * math.Pi * f / fs
+	z1 := cmplx.Exp(complex(0, -w))
+	z2 := z1 * z1
+	num := complex(b.b0, 0) + complex(b.b1, 0)*z1 + complex(b.b2, 0)*z2
+	den := 1 + complex(b.a1, 0)*z1 + complex(b.a2, 0)*z2
+	return 20 * math.Log10(cmplx.Abs(num/den))
+}
+
+func TestPeaking(t *testing.T) {
+	const sr = 48000
+	for _, g := range []float64{-6, 4, 9} {
+		for _, q := range []float64{0.5, 1, 3} {
+			b := Peaking(sr, 3000, g, q)
+			if got := b.gainAt(sr, 3000); math.Abs(got-g) > 0.01 {
+				t.Errorf("g=%v q=%v: center %.3f dB", g, q, got)
+			}
+			if got := b.gainAt(sr, 0); math.Abs(got) > 1e-9 {
+				t.Errorf("g=%v q=%v: DC %.3g dB", g, q, got)
+			}
+			if got := b.gainAt(sr, sr/2); math.Abs(got) > 1e-9 {
+				t.Errorf("g=%v q=%v: Nyquist %.3g dB", g, q, got)
+			}
+			// 同じ f0・Q のブーストとカットは打ち消し合う
+			inv := Peaking(sr, 3000, -g, q)
+			for _, f := range []float64{500, 2000, 3000, 5000, 12000} {
+				if got := b.gainAt(sr, f) + inv.gainAt(sr, f); math.Abs(got) > 0.01 {
+					t.Errorf("g=%v q=%v f=%v: +g and -g leave %.3f dB", g, q, f, got)
+				}
+			}
+		}
+	}
+	// 中心を対数で対称に挟む点で同じ量
+	b := Peaking(sr, 2000, 6, 1)
+	if d := b.gainAt(sr, 1000) - b.gainAt(sr, 4000); math.Abs(d) > 0.1 {
+		t.Errorf("not symmetric on a log axis: %.3f dB", d)
+	}
+	// 0 dB は恒等(ビット一致)
+	rng := rand.New(rand.NewSource(1))
+	x := make([]float32, 5000)
+	for i := range x {
+		x[i] = rng.Float32()*2 - 1
+	}
+	y := append([]float32(nil), x...)
+	Peaking(sr, 3000, 0, 1).Process(y)
+	for i := range x {
+		if x[i] != y[i] {
+			t.Fatalf("0 dB peaking changed sample %d", i)
+		}
 	}
 }

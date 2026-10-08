@@ -166,6 +166,9 @@ export namespace project {
 	    lowCutHz: number;
 	    lowShelfHz: number;
 	    lowShelfDb: number;
+	    presenceHz: number;
+	    presenceDb: number;
+	    presenceQ: number;
 	    highShelfHz: number;
 	    highShelfDb: number;
 	    compThresholdDb: number;
@@ -185,6 +188,9 @@ export namespace project {
 	        this.lowCutHz = source["lowCutHz"];
 	        this.lowShelfHz = source["lowShelfHz"];
 	        this.lowShelfDb = source["lowShelfDb"];
+	        this.presenceHz = source["presenceHz"];
+	        this.presenceDb = source["presenceDb"];
+	        this.presenceQ = source["presenceQ"];
 	        this.highShelfHz = source["highShelfHz"];
 	        this.highShelfDb = source["highShelfDb"];
 	        this.compThresholdDb = source["compThresholdDb"];

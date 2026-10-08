@@ -58,6 +58,9 @@ type PA struct {
 	LowCutHz        float64 `json:"lowCutHz"`
 	LowShelfHz      float64 `json:"lowShelfHz"`
 	LowShelfDb      float64 `json:"lowShelfDb"`
+	PresenceHz      float64 `json:"presenceHz"`
+	PresenceDb      float64 `json:"presenceDb"`
+	PresenceQ       float64 `json:"presenceQ"`
 	HighShelfHz     float64 `json:"highShelfHz"`
 	HighShelfDb     float64 `json:"highShelfDb"`
 	CompThresholdDb float64 `json:"compThresholdDb"`

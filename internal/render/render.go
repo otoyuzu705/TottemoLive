@@ -161,9 +161,17 @@ func (e *Engine) inputLevelStage(ctx context.Context, p project.Project, keys []
 func paKeyFor(p project.Project, keys []string, alignDb float64) string {
 	parts := make([]string, len(keys))
 	for i, k := range keys {
-		parts[i] = hashKey(k, p.Sources[i].GainDb, alignDb, p.PA)
+		parts[i] = hashKey(k, p.Sources[i].GainDb, alignDb, paKeyParams(p.PA))
 	}
 	return hashKey(parts)
+}
+
+// paKeyParams は、PA段のキーに入れる pa.*。プレゼンスの量が0なら、周波数とQは音に効かない(フィルタを通さない)ので入れない。
+func paKeyParams(pa project.PA) project.PA {
+	if pa.PresenceDb == 0 {
+		pa.PresenceHz, pa.PresenceQ = 0, 0
+	}
+	return pa
 }
 
 // paSpectrumKeyFor は、PA出力の帯域レベルのキー。読むもの: PAの出力だけ。座席・会場・残響・ミックス・マスターには依らない。
