@@ -253,6 +253,23 @@ func normBandTarget(fs float64) float64 {
 	return (normBandHiHz - normBandLoHz) / (fs / 2)
 }
 
+// buildUpEnvelope は、残響の立ち上がりの振幅の包絡(長さ ms のぶん。0 から 1 へ sin² で上がる)。
+// 実際の会場の残響は、まばらな初期反射から密な拡散音へ育つので、直達音の直後から最大のレベルでは始まらない。
+// 合成IRは先頭から密なノイズなので、立ち上がりを付けないと、アタックの直後に残響の塊がかぶさり
+// (特に長く大きい低域)、音の頭が濁る。0 以下なら nil(包絡なし)。
+func buildUpEnvelope(ms float64, sr int) []float32 {
+	m := int(ms * 1e-3 * float64(sr))
+	if m <= 0 {
+		return nil
+	}
+	w := make([]float32, m)
+	for i := range w {
+		s := math.Sin(math.Pi / 2 * float64(i) / float64(m))
+		w[i] = float32(s * s)
+	}
+	return w
+}
+
 // BuildIR は会場IR(左右)を作る。r.DecayScale で残響の長さ、r.HighDampHz で高域ダンプ、
 // r.PreDelayMs でプリディレイを決める。
 //
@@ -263,6 +280,9 @@ func normBandTarget(fs float64) float64 {
 //     相関を LowCoherence にする(1 で左右同じ)
 //   - 残響の長さ r.LowDecayScale: 実際の会場は低域ほど長く残る
 //   - レベル r.LowLevelDb
+//
+// 立ち上がり(r.BuildUpMs は中高域、r.LowBuildUpMs は低域)を付けると、プリディレイの後の頭がその時間をかけて
+// 0 から積み上がる(buildUpEnvelope)。正規化は立ち上がりを掛ける前のIRで決めるので、尾のレベルは変わらない。
 //
 // 中域のエネルギー密度をそろえる(上のIR正規化の説明を参照)ので、残響の長さ・高域ダンプ・低域の残響を変えても、
 // 残響の中域のレベルは変わらない。
@@ -320,8 +340,9 @@ func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
 	}
 
 	gLow := dsp.DbToLin(r.LowLevelDb)
-	out := make([][]float32, 2)
-	for ch := range out {
+	// 中高域と低域は別々の配列に作る(立ち上がりの長さが違うので、正規化を決めてから別々に掛けて足す)
+	var mainIR, lowIR [2][]float32
+	for ch := range mainIR {
 		ir := make([]float32, pre+n)
 		for j, band := range bands[ch] { // 中高域: 帯域ごとの残響時間の減衰
 			k := -ln1000 / (bandRT[j] * fs)
@@ -333,26 +354,49 @@ func BuildIR(pr Preset, r project.Reverb, sr int) [][]float32 {
 				ir[pre+i] += float32(float64(band[i]) * env)
 			}
 		}
+		lo := make([]float32, pre+n)
 		kLow := -ln1000 / (rtLow * fs) // 低域
 		for i := 0; i < n; i++ {
 			env := math.Exp(kLow * float64(i))
 			if i < fade {
 				env *= float64(i) / float64(fade)
 			}
-			ir[pre+i] += float32(gLow * float64(low[ch][i]) * env)
+			lo[pre+i] = float32(gLow * float64(low[ch][i]) * env)
 		}
 		dsp.LowPass(fs, r.HighDampHz).Process(ir)
-		out[ch] = ir
+		dsp.LowPass(fs, r.HighDampHz).Process(lo)
+		mainIR[ch], lowIR[ch] = ir, lo
+	}
+	out := make([][]float32, 2)
+	for ch := range out {
+		out[ch] = make([]float32, pre+n)
+		for i := range out[ch] {
+			out[ch][i] = mainIR[ch][i] + lowIR[ch][i]
+		}
 	}
 	// 中域(normBandLoHz〜normBandHiHz)のエネルギー密度が、エネルギー1の白色IRと同じになるようにそろえる。
 	// 全体のエネルギーでそろえると、高域ダンプで高域を削るほど中域が持ち上がり、低域のレベルを上げるほど
 	// 中域が下がってしまう(つまみが直感どおりに効かない)。中域を基準にすれば、高域ダンプ・低域の残響
-	// ・残響の長さは、残響の中域のレベルを変えずに、それぞれの帯域だけを変える
+	// ・残響の長さは、残響の中域のレベルを変えずに、それぞれの帯域だけを変える。
+	// 正規化は立ち上がりを掛ける前のIRで決める(立ち上がりは頭を削るだけで、尾のレベルを持ち上げない)
+	g := float32(1)
 	if e := midBandEnergy(out, fs) / float64(len(out)); e > 0 {
-		g := float32(math.Sqrt(normBandTarget(fs) / e))
-		for _, ir := range out {
-			for i := range ir {
-				ir[i] *= g
+		g = float32(math.Sqrt(normBandTarget(fs) / e))
+	}
+	bu, buLow := buildUpEnvelope(r.BuildUpMs, sr), buildUpEnvelope(r.LowBuildUpMs, sr)
+	for ch := range out {
+		for i := range out[ch] {
+			wm, wl := float32(1), float32(1)
+			if j := i - pre; j >= 0 && j < len(bu) {
+				wm = bu[j]
+			}
+			if j := i - pre; j >= 0 && j < len(buLow) {
+				wl = buLow[j]
+			}
+			if wm == 1 && wl == 1 {
+				out[ch][i] *= g
+			} else {
+				out[ch][i] = (mainIR[ch][i]*wm + lowIR[ch][i]*wl) * g
 			}
 		}
 	}

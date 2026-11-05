@@ -43,6 +43,8 @@ func TestPreviewCacheInvalidation(t *testing.T) {
 		{"reverb.lowLevelDb", func(p *project.Project) { p.Reverb.LowLevelDb = 9 }, []string{"reverb"}},
 		{"reverb.lowCrossoverHz", func(p *project.Project) { p.Reverb.LowCrossoverHz = 400 }, []string{"reverb"}},
 		{"reverb.preDelayMs", func(p *project.Project) { p.Reverb.PreDelayMs = 90 }, []string{"reverb"}},
+		{"reverb.buildUpMs", func(p *project.Project) { p.Reverb.BuildUpMs = 80 }, []string{"reverb"}},
+		{"reverb.lowBuildUpMs", func(p *project.Project) { p.Reverb.LowBuildUpMs = 120 }, []string{"reverb"}},
 		{"sub.levelDb", func(p *project.Project) { p.Sub.LevelDb = 9 }, []string{"direct", "reverb"}},
 		{"sub.crossoverHz", func(p *project.Project) { p.Sub.CrossoverHz = 120 }, []string{"direct", "reverb"}},
 		{"sub.enabled", func(p *project.Project) { p.Sub.Enabled = "off" }, []string{"direct", "reverb"}},

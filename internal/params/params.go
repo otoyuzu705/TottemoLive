@@ -85,6 +85,8 @@ var specs = []ParamSpec{
 	f("reverb.lowCoherence", "低域の左右の相関", "reverb", "", 0, 1, 0.05, 1),
 	f("reverb.lowDecayScale", "低域の残響の長さ", "reverb", "倍", 0.5, 2.5, 0.05, 1.3),
 	f("reverb.lowLevelDb", "低域の残響レベル", "reverb", "dB", -12, 12, 0.5, 3),
+	f("reverb.buildUpMs", "残響の立ち上がり", "reverb", "ms", 0, 300, 5, 0),
+	f("reverb.lowBuildUpMs", "低域の残響の立ち上がり", "reverb", "ms", 0, 300, 5, 0),
 	advanced(logScale(f("reverb.lowCrossoverHz", "低域の境界周波数", "reverb", "Hz", 80, 500, 5, 250))),
 
 	f("output.targetLufs", "ラウドネス目標", "master", "LUFS", -24, -9, 0.5, -14),

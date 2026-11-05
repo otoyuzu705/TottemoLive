@@ -105,6 +105,11 @@ type Reverb struct {
 	// 実際の会場は、空気や壁・客席の吸収で、高域ほど早く減衰する。
 	HighDecayScale float64 `json:"highDecayScale"`
 	HighDecayHz    float64 `json:"highDecayHz"`
+	// 残響の立ち上がり(ms)。プリディレイの後、残響がこの時間をかけて0から積み上がる
+	// (実際の会場は、まばらな初期反射から密な残響へ育つ)。BuildUpMs は中高域、LowBuildUpMs は低域
+	// (LowCrossoverHz 以下)。立ち上がりの後の残響(尾)のレベルは変わらない。
+	BuildUpMs    float64 `json:"buildUpMs"`
+	LowBuildUpMs float64 `json:"lowBuildUpMs"`
 }
 
 type Output struct {

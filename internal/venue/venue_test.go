@@ -219,6 +219,57 @@ func TestBuildIRLowLevel(t *testing.T) {
 	}
 }
 
+// 立ち上がりは、プリディレイの後の頭だけを削り、尾(立ち上がりの後)はサンプル単位で変えない
+// (正規化は立ち上がりを掛ける前のIRで決めるので、尾が持ち上がらない)。低域と中高域は別々に効く。
+func TestBuildIRBuildUp(t *testing.T) {
+	pr, _ := Get("arena")
+	base := pr.Reverb
+	base.BuildUpMs, base.LowBuildUpMs = 0, 0
+	pre := int(base.PreDelayMs * 1e-3 * 48000)
+	energy := func(x []float32, from, to int, band func([]float32)) float64 {
+		y := append([]float32(nil), x...)
+		band(y)
+		e := 0.0
+		for _, v := range y[from:to] {
+			e += float64(v) * float64(v)
+		}
+		return e
+	}
+	lowBand := func(x []float32) { dsp.LR4LowPass(x, 48000, 120) }
+	midBand := func(x []float32) { dsp.LR4HighPass(x, 48000, 600); dsp.LR4LowPass(x, 48000, 1400) }
+	a := BuildIR(pr, base, 48000)
+	for _, tc := range []struct {
+		name           string
+		main, low      float64
+		lowCut, midCut bool // 頭(立ち上がりの前半)が削れるはずの帯域
+	}{
+		{"low", 0, 120, true, false},
+		{"main", 120, 0, false, true},
+	} {
+		r := base
+		r.BuildUpMs, r.LowBuildUpMs = tc.main, tc.low
+		b := BuildIR(pr, r, 48000)
+		end := pre + int(120e-3*48000)
+		for ch := range a {
+			for i := end; i < len(a[ch]); i++ {
+				if a[ch][i] != b[ch][i] {
+					t.Fatalf("%s: tail changed at %d: %g != %g", tc.name, i, b[ch][i], a[ch][i])
+				}
+			}
+		}
+		head := pre + int(40e-3*48000) // 立ち上がりの前1/3(包絡は 0.25 以下)
+		dLow := 10 * math.Log10(energy(b[0], pre, head, lowBand)/energy(a[0], pre, head, lowBand))
+		dMid := 10 * math.Log10(energy(b[0], pre, head, midBand)/energy(a[0], pre, head, midBand))
+		if tc.lowCut != (dLow < -6) || tc.midCut != (dMid < -6) {
+			t.Errorf("%s: head change low %.1f dB, mid %.1f dB", tc.name, dLow, dMid)
+		}
+	}
+	// 立ち上がり 0 は従来の形(包絡なし)
+	if buildUpEnvelope(0, 48000) != nil {
+		t.Error("0 ms should give no envelope")
+	}
+}
+
 // MaxDistanceM は、会場内の最も遠いスピーカー(横に開いた位置)と客席の隅の距離を覆う。
 func TestMaxDistanceCoversTheRoom(t *testing.T) {
 	for _, pr := range List() {
