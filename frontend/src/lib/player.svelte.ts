@@ -68,6 +68,8 @@ class Player {
   private target: number | null = null
   /** 先行プレビューの終わりまで再生して止まった、または窓の外へのシークで止めた(次の音源が届いたら続きを再生する) */
   private stalled = false
+  /** 読み込み中の差し替え(swap)の、続きの位置(曲頭からの秒)と再生状態。読み込み中でなければ null */
+  private pendingSwap: { t: number; wasPlaying: boolean } | null = null
   private raf = 0
   private ctx?: AudioContext
   private gain?: GainNode
@@ -211,11 +213,16 @@ class Player {
 
   private async swap(src: string, keepPosition: boolean) {
     const off = this.offsets[this.mode]
+    // 前の差し替えがまだ読み込み中なら、いまの <audio> は読み込み途中で位置・再生状態を持たないので、
+    // 前の差し替えが覚えていた続きの位置と再生状態を引き継ぐ
+    const prev = this.pendingSwap
     // 続きの位置(曲頭からの秒)。窓の外へのシークを待っていたときはその位置、そうでなければ今の位置
-    const t = !keepPosition ? 0 : (this.target ?? this.audio.currentTime + this.srcOffset)
+    const t = !keepPosition ? 0 : prev ? prev.t : (this.target ?? this.audio.currentTime + this.srcOffset)
     this.target = null
-    const wasPlaying = !this.audio.paused || this.stalled
+    const wasPlaying = prev ? prev.wasPlaying : !this.audio.paused || this.stalled
     this.stalled = false
+    const mine = { t, wasPlaying }
+    this.pendingSwap = mine
     this.replaceAudio()
     const audio = this.audio
     audio.src = src
@@ -229,8 +236,9 @@ class Player {
       const timer = setTimeout(done, 3000)
       audio.addEventListener('loadedmetadata', done, { once: true })
     })
-    // 待っている間に次の差し替えが始まっていたら、位置合わせと再生はそちらに任せる
-    if (audio !== this.audio) return
+    // 待っている間に次の差し替えが始まっていたら、位置合わせと再生はそちらに任せる(続きの位置・再生状態は引き継ぎ済み)
+    if (this.pendingSwap !== mine) return
+    this.pendingSwap = null
     const len = this.audio.duration
     if (Number.isFinite(len)) this.duration = len + off
     // 窓(先行プレビュー)に収まらない位置なら、窓の端に寄せて止め、新しい窓を要求する
