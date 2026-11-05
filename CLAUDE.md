@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 現状
 
-M1(エンジンとCLI)とM2(Wails骨格・音作りパネル・曲全体のプレビュー・A/B・書き出し)、M3(会場マップのドラッグ)、M5(ステム分離連携・プリセット追加)まで実装済み。初版のマイルストーンは一通り完了で、これからは音質の追い込み(合成IR・合成HRIRの実素材への差し替えを含む)。実装は設計書 `TottemoLive-design.md` に従う。設計と違う実装をする場合は、設計書も同じ変更で更新する。
+M1(エンジンとCLI)とM2(Wails骨格・音作りパネル・曲全体のプレビュー・A/B・書き出し)、M3(会場マップのドラッグ)、M5(ステム分離連携・プリセット追加)まで実装済み。初版のマイルストーンは一通り完了で、これからは音質の追い込み(合成IR・合成HRIRの実素材への差し替えを含む)。実装は設計書 `TottemoLive-design.md` に従う。設計と違う実装をする場合は、設計書も同じ変更で更新する。音質の測定結果と次に試すことは `docs/SOUND-NOTES.md` に記録する(帯域バランスの測定は `scripts/band_balance.py`)。
 
 作るもの: 楽曲音源を「指定した会場・座席で聴いているような」バイノーラル音源に変換して書き出すデスクトップアプリ(アプリ名は `TottemoLive`、Goモジュール名は `tottemolive`)。Go + Wails v2、フロントは Svelte + TypeScript。
 
