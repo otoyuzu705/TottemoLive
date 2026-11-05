@@ -55,7 +55,10 @@ class Player {
   /** 先行プレビューの窓の外へシークされた(曲頭からの秒)。曲全体の処理がまだ終わっていないときに呼ばれる */
   onWindowMiss: ((sec: number) => void) | null = null
 
-  private audio = new Audio()
+  /** いま鳴らしている <audio>。音源を差し替えるたびに作り直す(replaceAudio) */
+  private audio = this.createAudio()
+  /** this.audio をWebAudioの経路につなぐノード(経路を作るまでは無い) */
+  private source?: MediaElementAudioSourceNode
   private blobs: Partial<Record<Mode, string>> = {}
   /** 音源ごとの、先頭の位置(曲頭からの秒) */
   private offsets: Record<Mode, number> = { processed: 0, original: 0 }
@@ -71,18 +74,48 @@ class Player {
   private analyser?: AnalyserNode
   private freqBuf?: Float32Array<ArrayBuffer>
 
-  constructor() {
-    this.audio.addEventListener('play', () => {
+  /**
+   * <audio> を作る。Linux(WebKitGTK + GStreamer)では、曲をまるごと先読みする経路(preload="auto")で
+   * シークすると、WebKitの画面スレッドとGStreamerが互いを待って固まる(Ubuntu 22.04 の WebKitGTK 2.50 で再現)。
+   * そのため preload="metadata" にして先読みさせない。ただしWebKitは、一度再生した <audio> の次の読み込みを
+   * 先読みに戻してしまうので、src を差し替えず、音源ごとに新しい <audio> を作る(replaceAudio)。
+   * 音源は blob なので、先読みしなくても再生・シークは遅れない。
+   * 古い <audio> のイベントは無視する(差し替えで止めたときの pause などで、状態を崩さないため)。
+   */
+  private createAudio(): HTMLAudioElement {
+    const a = new Audio()
+    a.preload = 'metadata'
+    a.addEventListener('play', () => {
+      if (a !== this.audio) return
       this.playing = true
       this.tick()
     })
-    this.audio.addEventListener('pause', () => {
+    a.addEventListener('pause', () => {
+      if (a !== this.audio) return
       this.playing = false
       cancelAnimationFrame(this.raf)
     })
-    this.audio.addEventListener('ended', () => {
+    a.addEventListener('ended', () => {
+      if (a !== this.audio) return
       if (this.windowed && this.mode === 'processed') this.stalled = true
     })
+    return a
+  }
+
+  /** 新しい <audio> に切り替え、古いものは止めて手放す。WebAudioの経路があれば、新しい <audio> をつなぎ直す。 */
+  private replaceAudio() {
+    const old = this.audio
+    this.audio = this.createAudio()
+    this.playing = false
+    cancelAnimationFrame(this.raf)
+    old.pause()
+    old.removeAttribute('src')
+    old.load()
+    if (this.ctx && this.gain) {
+      this.source?.disconnect()
+      this.source = this.ctx.createMediaElementSource(this.audio)
+      this.source.connect(this.gain)
+    }
   }
 
   private tick = () => {
@@ -100,7 +133,7 @@ class Player {
   private ensureGraph() {
     if (this.gain) return
     this.ctx = new AudioContext()
-    const source = this.ctx.createMediaElementSource(this.audio)
+    this.source = this.ctx.createMediaElementSource(this.audio)
     this.gain = this.ctx.createGain()
     this.analyser = this.ctx.createAnalyser()
     this.analyser.fftSize = ANALYSER_FFT_SIZE
@@ -108,7 +141,7 @@ class Player {
     this.analyser.minDecibels = -140
     this.analyser.maxDecibels = 0
     this.freqBuf = new Float32Array(this.analyser.frequencyBinCount)
-    source.connect(this.gain).connect(this.analyser).connect(this.ctx.destination)
+    this.source.connect(this.gain).connect(this.analyser).connect(this.ctx.destination)
     this.applyVolume(true)
   }
 
@@ -183,7 +216,9 @@ class Player {
     this.target = null
     const wasPlaying = !this.audio.paused || this.stalled
     this.stalled = false
-    this.audio.src = src
+    this.replaceAudio()
+    const audio = this.audio
+    audio.src = src
     this.srcOffset = off
     // 読み込み完了を待つ。バックグラウンドのタブなどで読み込みが進まなくても、処理を止めないよう上限を付ける
     await new Promise<void>((resolve) => {
@@ -192,8 +227,10 @@ class Player {
         resolve()
       }
       const timer = setTimeout(done, 3000)
-      this.audio.addEventListener('loadedmetadata', done, { once: true })
+      audio.addEventListener('loadedmetadata', done, { once: true })
     })
+    // 待っている間に次の差し替えが始まっていたら、位置合わせと再生はそちらに任せる
+    if (audio !== this.audio) return
     const len = this.audio.duration
     if (Number.isFinite(len)) this.duration = len + off
     // 窓(先行プレビュー)に収まらない位置なら、窓の端に寄せて止め、新しい窓を要求する
