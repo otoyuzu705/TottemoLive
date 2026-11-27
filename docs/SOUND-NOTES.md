@@ -74,6 +74,7 @@ Ubuntu 22.04(WebKitGTK 2.50 + GStreamer 1.20)で、プレビューの再生位�
 
 - 原因: `<audio>` が曲をまるごと先読みする経路(`preload="auto"`)でシークすると、WebKitの画面スレッドとGStreamerが互いを待ってデッドロックする。WebKitは一度再生した `<audio>` の次の読み込みを先読みに戻すので、`preload="metadata"` だけでは、音源を差し替えた後のシークで再び固まる
 - 修正: `preload="metadata"` にし、音源の差し替えのたびに `<audio>` を作り直す
-- 残り: Linuxのアプリでの最終確認と、Macで再生・シーク・A/B・音量・スペクトラムが今まで通りかの確認(Windowsでは、取り込んだ後の `feature/bass-clarity` で A/B の聴き比べができた)
+- 確認: Linuxのアプリで確認済み(2026-11-28)。Windowsでは、取り込んだ後の `feature/bass-clarity` で A/B の聴き比べができた
+- 残り: Macで再生・シーク・A/B・音量・スペクトラムが今まで通りかの確認
 
 Linuxで `wails dev` を動かすときは `-tags webkit2_41` が要る(`docs/DEVELOPMENT.md`)。Homebrewの `ld` が PATH の先にある環境では、`CGO_LDFLAGS="-B/usr/bin"` も付けてシステムの `ld` でリンクする。
