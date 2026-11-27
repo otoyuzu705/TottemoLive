@@ -56,20 +56,21 @@ func TestMixDelaysReverb(t *testing.T) {
 	mix(g, direct, reverb, delay)
 }
 
-// 残響のゲインは会場の物理的な値: 臨界距離にいるとき、メイン全部の直接音と同じ大きさ(D/R = 0 dB)。
+// 残響のゲインは会場の物理的な値: 臨界距離にいるとき、メイン全部の直接音のエネルギーの和と同じ大きさ(D/R = 0 dB)。
+// 拡散音場のエネルギーは各スピーカーのエネルギーの和なので、ゲインは1本の √本数 倍(振幅の和の 本数 倍ではない)。
 // 残響はリスナーの位置に依らず、直接音は距離で変わる。reverb.mix は基準値のとき物理値、0で無し、1で約+9 dB。
 func TestMixGainsPhysicalReverb(t *testing.T) {
 	arena, _ := venue.Get("arena")
 	p := project.New() // アリーナ、メイン2本、mix は基準値
 	g := mixGainsFor(p, arena)
 	dc := venue.CriticalDistanceM(arena, p.Reverb.DecayScale)
-	directAtDc := float64(len(p.Venue.Speakers)) * spatial.Gain(dc, p.Spatial.DistanceRolloff)
+	directAtDc := math.Sqrt(float64(len(p.Venue.Speakers))) * spatial.Gain(dc, p.Spatial.DistanceRolloff)
 	if math.Abs(float64(g.reverb)-directAtDc) > 1e-6 {
 		t.Errorf("reverb gain %.4f, want the direct gain at the critical distance %.4f", g.reverb, directAtDc)
 	}
 	// D/R は距離で変わる: 臨界距離の半分の席では直接音が +6 dB、倍の席では -6 dB
 	dr := func(d float64) float64 {
-		return 20 * math.Log10(float64(len(p.Venue.Speakers))*spatial.Gain(d, 1)/float64(g.reverb))
+		return 20 * math.Log10(math.Sqrt(float64(len(p.Venue.Speakers)))*spatial.Gain(d, 1)/float64(g.reverb))
 	}
 	if math.Abs(dr(dc)) > 1e-6 || math.Abs(dr(dc/2)-6.02) > 0.05 || math.Abs(dr(dc*2)+6.02) > 0.05 {
 		t.Errorf("D/R at dc/2, dc, 2dc: %.2f %.2f %.2f dB", dr(dc/2), dr(dc), dr(dc*2))

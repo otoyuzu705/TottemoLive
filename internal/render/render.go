@@ -250,7 +250,7 @@ func reverbIR(ctx context.Context, pp *prepared) ([][]float32, error) {
 
 // reverbKeyFor は残響のキー。スピーカーから放射された音(radiatedProc)を会場IR(左右)で畳み込む。
 // 残響は距離減衰を掛ける前の信号で駆動する(拡散音場のレベルは距離に依らないため)。
-// 読むもの: 会場、reverb.preDelayMs / decayScale / highDampHz / low*(低域の残響) / high*(高域の残響)、
+// 読むもの: 会場、reverb.preDelayMs / decayScale / highDampHz / low*(低域の残響) / high*(高域の残響) / buildUpMs・lowBuildUpMs(立ち上がり)、
 // sub.*(サブが有効か・レベル・クロスオーバー。サブの低域も会場を励起するので残響に入る)、
 // 空気吸収の補正が有効なときだけ、補正EQ(メインの位置・会場で決まる)と spatial.airAbsorption、PAの出力。
 // (reverb.mix はミックス段)
@@ -267,7 +267,8 @@ func reverbKeyFor(pp *prepared, paKey string) string {
 		air = pp.p.Spatial.AirAbsorption
 	}
 	return hashKey(paKey, pp.p.Venue.Preset, r.PreDelayMs, r.DecayScale, r.HighDampHz,
-		r.LowCoherence, r.LowDecayScale, r.LowLevelDb, r.LowCrossoverHz, r.HighDecayScale, r.HighDecayHz, active, sub, comp, air)
+		r.LowCoherence, r.LowDecayScale, r.LowLevelDb, r.LowCrossoverHz, r.HighDecayScale, r.HighDecayHz,
+		r.BuildUpMs, r.LowBuildUpMs, active, sub, comp, air)
 }
 
 // fohReference は、サブの時間合わせと空気吸収の補正の基準点(現場のFOH: 客席の中央、奥行きの半分、耳の高さ)。
@@ -300,13 +301,15 @@ type mixGains struct{ direct, reverb float32 }
 // 直接音: spatial.directLevelDb だけ(距離による大きさは、スピーカーごとの距離減衰で既に掛かっている)。
 // 残響: 会場の物理的な値を基準にする。残響(拡散音場)の大きさは、リスナーの位置に依らず一定で、直接音は
 // 距離に応じて変わる。両者が等しくなる距離が臨界距離で、会場の容積・残響時間・PAの指向係数から決まる
-// (venue.CriticalDistanceM)。そこで、残響のゲインを「臨界距離にいるときの、メイン全部の直接音のゲインの和」にする。
-// すると、臨界距離より近い席では直接音が主役、遠い席では残響が主役になり、会場による違いも出る。
+// (venue.CriticalDistanceM)。そこで、残響のゲインを「臨界距離にいるときの、メイン全部の直接音のエネルギーの和」
+// (1本のゲイン × √本数)にする。すると、臨界距離より近い席では直接音が主役、遠い席では残響が主役になり、
+// 会場による違いも出る。拡散音場のエネルギーは各スピーカーが放射したエネルギーの和なので、振幅の和(× 本数)
+// ではない(以前は × 本数で、2本で約 +3 dB 残響が大きすぎた)。
 // reverb.mix は、その上の補正で、基準値(venue.NominalMix)のときに物理的な値、0 で残響なし、1 で約 +9 dB。
 // (直接音を (1 - mix) で薄める従来のクロスフェードはやめた。全体の音量はラウドネス調整で決まる)
 func mixGainsFor(p project.Project, pr venue.Preset) mixGains {
 	dc := venue.CriticalDistanceM(pr, p.Reverb.DecayScale)
-	reverb := float64(len(p.Venue.Speakers)) * spatial.Gain(dc, p.Spatial.DistanceRolloff) * p.Reverb.Mix / venue.NominalMix
+	reverb := math.Sqrt(float64(len(p.Venue.Speakers))) * spatial.Gain(dc, p.Spatial.DistanceRolloff) * p.Reverb.Mix / venue.NominalMix
 	return mixGains{
 		direct: float32(dsp.DbToLin(p.Spatial.DirectLevelDb)),
 		reverb: float32(reverb),
