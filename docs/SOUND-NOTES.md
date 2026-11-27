@@ -61,12 +61,19 @@ python3 scripts/band_balance.py 原音.wav out.wav 別の書き出し.wav ...
 - [ ] 既定値(`spatial.hrirSet`、`spatial.airCompensation`)を変えるかは、聴いた結果で決める。まだ変えていない
 - 低音の余韻(到達から 250 ms 以降の低域残響)は消したくない。低音の明瞭さに手を入れるときは、余韻を何 dB 削るかも測って示す
 
+## 2026-11-28 残響のゲイン √本数 の聴き比べ
+
+アプリ(Windows、`wails dev`)の A/B で、残響のゲインを √本数 にした変更の前後を聴き比べた。残響の大きさは `reverb.mix` に比例し、メイン2本では旧式(× 本数)と新式(× √本数)の比がちょうど √2 なので、B の `reverb.mix` を A の 1.414 倍にすると変更前の音になる。
+
+- 結果: √本数(変更後)のほうが低音がすっきりして良い。余韻が物足りないなどの問題は感じなかった
+- 立ち上がり(`reverb.buildUpMs` / `reverb.lowBuildUpMs`)と、上の「全体のバランス」の3つの設定は、まだ聴いていない(既定値も変えていない)
+
 ## 関連: Linux版でプレビューのシーク時に固まる問題(2026-11-05)
 
-Ubuntu 22.04(WebKitGTK 2.50 + GStreamer 1.20)で、プレビューの再生位置を変えると画面が固まる問題を直した(PR #47、`fix/linux-audio-seek-freeze` → `dev`、未マージ)。
+Ubuntu 22.04(WebKitGTK 2.50 + GStreamer 1.20)で、プレビューの再生位置を変えると画面が固まる問題を直した(PR #47、`fix/linux-audio-seek-freeze` → `dev`。2026-11-28 にマージし、`feature/bass-clarity` にも取り込んだ)。
 
 - 原因: `<audio>` が曲をまるごと先読みする経路(`preload="auto"`)でシークすると、WebKitの画面スレッドとGStreamerが互いを待ってデッドロックする。WebKitは一度再生した `<audio>` の次の読み込みを先読みに戻すので、`preload="metadata"` だけでは、音源を差し替えた後のシークで再び固まる
 - 修正: `preload="metadata"` にし、音源の差し替えのたびに `<audio>` を作り直す
-- 残り: Linuxのアプリでの最終確認、Windows・Macで再生・シーク・A/B・音量・スペクトラムが今まで通りかの確認。確認できたらマージし、`dev` を `feature/bass-clarity` に取り込む(取り込むまで、このブランチを Linux で動かすとシークで固まる)
+- 残り: Linuxのアプリでの最終確認と、Macで再生・シーク・A/B・音量・スペクトラムが今まで通りかの確認(Windowsでは、取り込んだ後の `feature/bass-clarity` で A/B の聴き比べができた)
 
 Linuxで `wails dev` を動かすときは `-tags webkit2_41` が要る(`docs/DEVELOPMENT.md`)。Homebrewの `ld` が PATH の先にある環境では、`CGO_LDFLAGS="-B/usr/bin"` も付けてシステムの `ld` でリンクする。
